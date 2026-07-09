@@ -6,7 +6,7 @@ export const TARGET_LAYER_DURATIONS = [
   { layerIndex: 4, minutes: 30 }
 ];
 
-export const DEFAULT_COMBAT_BUDGET_SHARE = 0.7;
+export const DEFAULT_COMBAT_BUDGET_SHARE = 0.9;
 export const TARGET_HARD_GATE_ACQUISITION = [{ layerIndex: 4, seconds: 5 * 60 }];
 
 export function scaleTargetDurations(targetDurations = TARGET_LAYER_DURATIONS, scale = DEFAULT_COMBAT_BUDGET_SHARE) {

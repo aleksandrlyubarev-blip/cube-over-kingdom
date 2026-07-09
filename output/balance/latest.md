@@ -1,29 +1,29 @@
 # Balance Snapshot
 
-Generated: 2026-07-09T01:35:36.032Z
+Generated: 2026-07-09T03:23:55.534Z
 
 ## Theoretical 4-Slot Pressure
 
 | Layer | HP | Best L3 weapon | 4-slot DPS | Clear time |
 | --- | ---: | --- | ---: | ---: |
-| Внешняя каменная кора | 15000 | Баллиста | 842.24 | 18s |
-| Плотная кладка | 25000 | Требушет | 1278.87 | 20s |
-| Астральный гранит | 45000 | Бомбарда | 2239.99 | 20s |
-| Внутреннее ядро | 120000 | Пушка | 7187.54 | 17s |
-| Сердце куба | 200000 | Осадная пушка | 12527.25 | 16s |
+| Внешняя каменная кора | 43000 | Баллиста | 842.24 | 51s |
+| Плотная кладка | 750000 | Требушет | 1278.87 | 9m 46s |
+| Астральный гранит | 1400000 | Бомбарда | 2239.99 | 10m 25s |
+| Внутреннее ядро | 2900000 | Пушка | 7187.54 | 6m 43s |
+| Сердце куба | 4600000 | Осадная пушка | 12527.25 | 6m 7s |
 
 ## Budget Partition
 
 | Metric | Value |
 | --- | ---: |
 | Total target | 3h 47m |
-| Combat share | 70% |
-| Combat target | 2h 39m |
-| Acquisition share | 30% |
-| Acquisition target | 1h 8m |
+| Combat share | 90% |
+| Combat target | 3h 24m |
+| Acquisition share | 10% |
+| Acquisition target | 22m 45s |
 | Hard-gate acquisition target | 5m 0s |
-| Soft acquisition target | 1h 3m |
-| Projected combat + acquisition | 2h 39m + 1h 8m = 3h 47m |
+| Soft acquisition target | 17m 45s |
+| Projected combat + acquisition | 3h 24m + 22m 45s = 3h 47m |
 | Budget guard OK | yes |
 
 ## Guardrails
@@ -31,108 +31,108 @@ Generated: 2026-07-09T01:35:36.032Z
 | Metric | Value |
 | --- | ---: |
 | Completed profiles | 3 |
-| Total spread | 3.97x |
-| Combat spread | 2.06x |
-| Optimizer total time | 1h 0m |
-| Optimizer combat time | 20m 17s |
+| Total spread | 1.9x |
+| Combat spread | 1.89x |
+| Optimizer total time | 1h 47m |
+| Optimizer combat time | 1h 46m |
 | Total spread OK | yes |
 | Combat spread OK | yes |
 | Total optimizer OK | yes |
-| Combat optimizer OK | no |
+| Combat optimizer OK | yes |
 | Total guardrails OK | yes |
-| Combat guardrails OK | no |
+| Combat guardrails OK | yes |
 
 ## Partitioned HP Suggestion
 
-Total HP: 405000 current -> 1681724 suggested at 70% combat budget.
+Total HP: 9693000 current -> 9862549 suggested at 90% combat budget.
 
 | Layer | Current HP | Total | Acq | Combat | Target | Source | DPS_eff | Suggested HP | Delta |
 | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: | ---: |
-| Внешняя каменная кора | 15000 | 7m 43s | 16s | 7m 27s | 21m 0s | combat | 33.56 | 42282 | +27282 |
-| Плотная кладка | 25000 | 17m 4s | 11m 45s | 5m 19s | 29m 45s | combat | 78.37 | 139890 | +114890 |
-| Астральный гранит | 45000 | 9m 48s | 0s | 9m 48s | 40m 15s | combat | 76.53 | 184821 | +139821 |
-| Внутреннее ядро | 120000 | 29m 5s | 14m 21s | 14m 44s | 47m 15s | combat | 135.75 | 384842 | +264842 |
-| Сердце куба | 200000 | 2h 40m | 2h 35m | 4m 31s | 21m 0s | combat | 738.01 | 929889 | +729889 |
+| Внешняя каменная кора | 43000 | 27m 15s | 16s | 26m 59s | 27m 0s | combat | 26.56 | 43027 | +27 |
+| Плотная кладка | 750000 | 39m 5s | 1m 25s | 37m 40s | 38m 15s | combat | 331.86 | 761615 | +11615 |
+| Астральный гранит | 1400000 | 50m 50s | 0s | 50m 50s | 51m 45s | combat | 459.02 | 1425246 | +25246 |
+| Внутреннее ядро | 2900000 | 1h 0m | 2s | 1h 0m | 1h 0m | combat | 803.32 | 2928116 | +28116 |
+| Сердце куба | 4600000 | 26m 30s | 6s | 26m 24s | 27m 0s | combat | 2904.04 | 4704545 | +104545 |
 
 ## Hard-Gate Acquisition Economy
 
 | Layer | Observed wait | Target wait | Limiting resource | Suggested cost cap | OK |
 | --- | ---: | ---: | --- | ---: | --- |
-| Сердце куба | 2h 35m | 5m 0s | orders | 1.5K orders / 3.8K shards | no |
+| Сердце куба | 6s | 5m 0s | orders | 23.5K orders / 3.8K shards | yes |
 
 ### Suggested-HP Preview
 
 | Profile | Result | Total | Acq | Combat | Remaining HP |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Пассивный | win | 4h 43m | 2h 46m | 1h 57m | 0 |
-| Средний | not finished | 5h 0m | 7m 22s | 1h 2m | 929889 |
-| Оптимизатор | win | 3h 8m | 2h 20m | 48m 7s | 0 |
+| Пассивный | win | 3h 25m | 2m 1s | 3h 23m | 0 |
+| Средний | win | 2h 21m | 1m 9s | 2h 19m | 0 |
+| Оптимизатор | win | 1h 48m | 26s | 1h 47m | 0 |
 
-Suggested preview total spread: 1.51x; optimizer: 3h 8m; ok: no.
-Suggested preview combat spread: 2.44x; optimizer combat: 48m 7s; ok: no.
+Suggested preview total spread: 1.9x; optimizer: 1h 48m; ok: yes.
+Suggested preview combat spread: 1.89x; optimizer combat: 1h 47m; ok: yes.
 
 ## Profiles
 
 ### Пассивный
 
-Result: win in 3h 43m; combat: 41m 49s; acquisition: 3h 1m; remaining HP: 0.
+Result: win in 3h 23m; combat: 3h 22m; acquisition: 1m 49s; remaining HP: 0.
 
 | Metric | Value |
 | --- | ---: |
-| Damage | 405000 |
-| Shots | 759 |
-| Spawned blocks | 4222 |
-| Collected blocks | 4134 |
-| Shards collected | 13262 |
+| Damage | 9693000 |
+| Shots | 5907 |
+| Spawned blocks | 47498 |
+| Collected blocks | 47383 |
+| Shards collected | 321821 |
 | Manual weak hits | 0 |
 
 | Layer | Total | Acq | Combat | Ended at |
 | --- | ---: | ---: | ---: | ---: |
-| Внешняя каменная кора | 7m 43s | 16s | 7m 27s | 7m 43s |
-| Плотная кладка | 17m 4s | 11m 45s | 5m 19s | 24m 47s |
-| Астральный гранит | 9m 48s | 0s | 9m 48s | 34m 35s |
-| Внутреннее ядро | 29m 5s | 14m 21s | 14m 44s | 1h 3m |
-| Сердце куба | 2h 40m | 2h 35m | 4m 31s | 3h 43m |
+| Внешняя каменная кора | 27m 15s | 16s | 26m 59s | 27m 15s |
+| Плотная кладка | 39m 5s | 1m 25s | 37m 40s | 1h 6m |
+| Астральный гранит | 50m 50s | 0s | 50m 50s | 1h 57m |
+| Внутреннее ядро | 1h 0m | 2s | 1h 0m | 2h 57m |
+| Сердце куба | 26m 30s | 6s | 26m 24s | 3h 23m |
 
 ### Средний
 
-Result: win in 3h 59m; combat: 30m 11s; acquisition: 3h 29m; remaining HP: 0.
+Result: win in 2h 19m; combat: 2h 18m; acquisition: 1m 8s; remaining HP: 0.
 
 | Metric | Value |
 | --- | ---: |
-| Damage | 405000 |
-| Shots | 536 |
-| Spawned blocks | 3528 |
-| Collected blocks | 3478 |
-| Shards collected | 25624 |
+| Damage | 9693000 |
+| Shots | 4437 |
+| Spawned blocks | 39280 |
+| Collected blocks | 39215 |
+| Shards collected | 532278 |
 | Manual weak hits | 0 |
 
 | Layer | Total | Acq | Combat | Ended at |
 | --- | ---: | ---: | ---: | ---: |
-| Внешняя каменная кора | 3m 44s | 9s | 3m 35s | 3m 44s |
-| Плотная кладка | 9m 43s | 4m 19s | 5m 24s | 13m 27s |
-| Астральный гранит | 5m 53s | 0s | 5m 53s | 19m 20s |
-| Внутреннее ядро | 18m 18s | 5m 22s | 12m 56s | 37m 38s |
-| Сердце куба | 3h 22m | 3h 19m | 2m 23s | 3h 59m |
+| Внешняя каменная кора | 12m 53s | 9s | 12m 44s | 12m 53s |
+| Плотная кладка | 35m 7s | 58s | 34m 9s | 48m 0s |
+| Астральный гранит | 51m 15s | 0s | 51m 15s | 1h 39m |
+| Внутреннее ядро | 12m 17s | 0s | 12m 17s | 1h 51m |
+| Сердце куба | 27m 39s | 1s | 27m 38s | 2h 19m |
 
 ### Оптимизатор
 
-Result: win in 1h 0m; combat: 20m 17s; acquisition: 40m 12s; remaining HP: 0.
+Result: win in 1h 47m; combat: 1h 46m; acquisition: 26s; remaining HP: 0.
 
 | Metric | Value |
 | --- | ---: |
-| Damage | 405000 |
-| Shots | 418 |
-| Spawned blocks | 3202 |
-| Collected blocks | 3202 |
-| Shards collected | 20200 |
+| Damage | 9693000 |
+| Shots | 2919 |
+| Spawned blocks | 29890 |
+| Collected blocks | 29890 |
+| Shards collected | 556944 |
 | Manual weak hits | 0 |
 
 | Layer | Total | Acq | Combat | Ended at |
 | --- | ---: | ---: | ---: | ---: |
-| Внешняя каменная кора | 2m 16s | 3s | 2m 13s | 2m 16s |
-| Плотная кладка | 4m 34s | 1m 29s | 3m 5s | 6m 50s |
-| Астральный гранит | 2m 42s | 0s | 2m 42s | 9m 32s |
-| Внутреннее ядро | 9m 38s | 1m 3s | 8m 35s | 19m 10s |
-| Сердце куба | 41m 19s | 37m 37s | 3m 42s | 1h 0m |
+| Внешняя каменная кора | 5m 19s | 3s | 5m 16s | 5m 19s |
+| Плотная кладка | 29m 55s | 22s | 29m 33s | 35m 14s |
+| Астральный гранит | 29m 13s | 0s | 29m 13s | 1h 4m |
+| Внутреннее ядро | 13m 58s | 0s | 13m 58s | 1h 18m |
+| Сердце куба | 28m 43s | 1s | 28m 42s | 1h 47m |
 

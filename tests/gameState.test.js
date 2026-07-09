@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CUBE_LAYERS,
+  LAYER_ORDER_RATE_BONUS,
+  LAYER_REWARDS,
+  LEGACY_V1_LAYER_HP,
+  SAVE_VERSION,
+  deserializeGameState,
+  getSiegeGateStatus,
+  serializeGameState,
   buildWeapon,
   buyUpgradeNode,
   canBuyUpgradeNode,
@@ -317,4 +324,120 @@ test("critical weak hit uses weapon crit multiplier without a second quality cri
   });
 
   assert.equal(damage, 5200 * 4 * 3);
+});
+
+test("destroying a layer grants the royal treasury reward and income bonus", () => {
+  const state = createGameState();
+  state.resources.orders = 1000;
+  state.cube.layerHp[0] = 30;
+  buildWeapon(state, 0, "stoneThrower");
+  const ordersBefore = state.resources.orders;
+
+  tickGame(state, 1, () => 0.5);
+
+  assert.equal(state.cube.layerIndex, 1);
+  assert.equal(state.resources.orders, ordersBefore + LAYER_REWARDS[0].orders);
+  assert.equal(state.modifiers.orderRate, LAYER_ORDER_RATE_BONUS[0]);
+});
+
+test("inner core reward funds most of the siege cannon and gate indicator reports the rest", () => {
+  const state = createGameState();
+  state.resources.orders = 10000;
+  state.resources.shards = 300;
+  state.cube.layerIndex = 3;
+  state.cube.layerHp = [0, 0, 0, 50, CUBE_LAYERS[4].hp];
+  buildWeapon(state, 0, "bombard");
+  state.slots[0].weapon.cooldown = 0;
+  const ordersBefore = state.resources.orders;
+  const shardsBefore = state.resources.shards;
+
+  tickGame(state, 0.5, () => 0.5);
+
+  assert.equal(state.cube.layerIndex, 4);
+  assert.equal(state.resources.orders, ordersBefore + LAYER_REWARDS[3].orders);
+  assert.equal(state.resources.shards, shardsBefore + LAYER_REWARDS[3].shards);
+  assert.equal(state.modifiers.orderRate, LAYER_ORDER_RATE_BONUS[3]);
+
+  const gate = getSiegeGateStatus(state);
+  assert.equal(gate.active, true);
+  assert.equal(gate.missingOrders, 0);
+  assert.ok(gate.missingShards > 0);
+  assert.equal(gate.affordable, false);
+});
+
+test("siege gate indicator is inactive before the heart and after building the cannon", () => {
+  const state = createGameState();
+  assert.equal(getSiegeGateStatus(state).active, false);
+
+  state.cube.layerIndex = 4;
+  state.cube.layerHp = [0, 0, 0, 0, CUBE_LAYERS[4].hp];
+  assert.equal(getSiegeGateStatus(state).active, true);
+
+  state.resources.orders = 50000;
+  state.resources.shards = 10000;
+  buildWeapon(state, 0, "siegeCannon");
+  assert.equal(getSiegeGateStatus(state).active, false);
+});
+
+test("v1 saves migrate proportional layer progress and retroactive layer rewards", () => {
+  const legacy = {
+    time: 1800,
+    won: false,
+    resources: { orders: 500, shards: 900 },
+    stats: { taps: 10, shots: 40, damage: 60000, layersDestroyed: 2 },
+    cube: {
+      layerIndex: 2,
+      layerHp: [0, 0, 22500, 120000, 200000],
+      totalHp: 405000,
+      damageMarks: [],
+      weakSpot: { x: 0.5, y: 0.5, age: 0, bornAt: 0 }
+    },
+    slots: Array.from({ length: 8 }, (_, id) => ({ id, weapon: null })),
+    unlockedSlots: 2,
+    selectedWeaponType: "stoneThrower",
+    selectedSlot: 0,
+    manualAimWeaponId: null,
+    blocks: [],
+    projectiles: [],
+    floatingTexts: [],
+    purchasedNodes: ["autoOrders"],
+    modifiers: { tapPower: 8, orderRate: 1, shardYield: 1 },
+    nextId: 50
+  };
+
+  const state = deserializeGameState(JSON.stringify(legacy));
+
+  assert.equal(state.version, SAVE_VERSION);
+  assert.equal(state.cube.layerHp[0], 0);
+  assert.equal(state.cube.layerHp[1], 0);
+  assert.equal(state.cube.layerHp[2], Math.round(CUBE_LAYERS[2].hp * (22500 / LEGACY_V1_LAYER_HP[2])));
+  assert.equal(state.cube.layerHp[3], CUBE_LAYERS[3].hp);
+  assert.equal(state.cube.layerHp[4], CUBE_LAYERS[4].hp);
+  assert.equal(state.resources.orders, 500 + LAYER_REWARDS[0].orders + LAYER_REWARDS[1].orders);
+  assert.equal(state.resources.shards, 900);
+  assert.equal(state.modifiers.orderRate, 1 + LAYER_ORDER_RATE_BONUS[0] + LAYER_ORDER_RATE_BONUS[1]);
+  assert.equal(state.modifiers.autoCollect, false);
+  assert.deepEqual(state.purchasedNodes, ["autoOrders"]);
+  assert.equal(state.stats.manualWeakHits, 0);
+  assert.equal(
+    state.cube.totalHp,
+    CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0)
+  );
+});
+
+test("current-version saves round-trip without duplicate rewards", () => {
+  const state = createGameState();
+  state.resources.orders = 777;
+  state.cube.layerIndex = 1;
+  state.cube.layerHp[0] = 0;
+
+  const restored = deserializeGameState(serializeGameState(state));
+
+  assert.equal(restored.version, SAVE_VERSION);
+  assert.equal(restored.resources.orders, 777);
+  assert.deepEqual(restored.cube.layerHp, state.cube.layerHp);
+});
+
+test("invalid saves are rejected", () => {
+  assert.throws(() => deserializeGameState("{}"));
 });

@@ -12,6 +12,7 @@ import {
   formatNumber,
   getCurrentLayer,
   getRemainingCubeHp,
+  getSiegeGateStatus,
   getUnlockedWeaponTypes,
   getWeaponCost,
   getWeaponType,
@@ -558,7 +559,14 @@ function renderUi() {
   ui.ordersValue.textContent = formatNumber(state.resources.orders);
   ui.shardsValue.textContent = formatNumber(state.resources.shards);
   ui.hpValue.textContent = `${formatNumber(remainingHp)} HP`;
-  ui.stageLabel.textContent = currentLayer.name;
+  const siegeGate = getSiegeGateStatus(state);
+  if (siegeGate.active) {
+    ui.stageLabel.textContent = siegeGate.affordable
+      ? `${currentLayer.name} · ${siegeGate.weaponName} доступна!`
+      : `${currentLayer.name} · нужна ${siegeGate.weaponName}: ещё ${describeMissing(siegeGate)}`;
+  } else {
+    ui.stageLabel.textContent = currentLayer.name;
+  }
   ui.slotCount.textContent = `${state.unlockedSlots}/8`;
   ui.selectedWeaponName.textContent = getWeaponType(state.selectedWeaponType).name;
   ui.selectedSlotName.textContent = `Слот ${state.selectedSlot + 1}`;
@@ -862,6 +870,17 @@ function getSlotScreenX(index, width) {
   const end = width * 0.82;
   const spacing = (end - start) / 7;
   return start + spacing * index;
+}
+
+function describeMissing(gate) {
+  const parts = [];
+  if (gate.missingOrders > 0) {
+    parts.push(`${formatNumber(gate.missingOrders)} приказов`);
+  }
+  if (gate.missingShards > 0) {
+    parts.push(`${formatNumber(gate.missingShards)} осколков`);
+  }
+  return parts.join(" · ") || "готово";
 }
 
 function formatCost(cost) {

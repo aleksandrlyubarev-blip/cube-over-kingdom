@@ -1,10 +1,33 @@
+// HP слоёв: combat-paced вектор из balance-солвера (90% боевого бюджета,
+// 4-я итерация, сошёлся). Пассивный профиль ~3ч25м, оптимизатор ~1ч50м.
 export const CUBE_LAYERS = [
-  { id: "crust", name: "Внешняя каменная кора", hp: 15000, color: "#81848a" },
-  { id: "masonry", name: "Плотная кладка", hp: 25000, color: "#62666d" },
-  { id: "granite", name: "Астральный гранит", hp: 45000, color: "#59637f" },
-  { id: "core", name: "Внутреннее ядро", hp: 120000, color: "#4c4f65" },
-  { id: "heart", name: "Сердце куба", hp: 200000, color: "#5d3d58" }
+  { id: "crust", name: "Внешняя каменная кора", hp: 43000, color: "#81848a" },
+  { id: "masonry", name: "Плотная кладка", hp: 750000, color: "#62666d" },
+  { id: "granite", name: "Астральный гранит", hp: 1400000, color: "#59637f" },
+  { id: "core", name: "Внутреннее ядро", hp: 2900000, color: "#4c4f65" },
+  { id: "heart", name: "Сердце куба", hp: 4600000, color: "#5d3d58" }
 ];
+
+export const SAVE_VERSION = 2;
+
+// HP слоёв, с которыми жили сейвы v1 (до версионирования). Нужны миграции,
+// чтобы пересчитать прогресс слоя пропорционально при изменении баланса.
+export const LEGACY_V1_LAYER_HP = [15000, 25000, 45000, 120000, 200000];
+
+// Королевская казна: единоразовая выплата за разрушение слоя.
+// L4 покрывает ~3/4 стоимости осадной пушки, чтобы hard gate на Сердце куба
+// был предвкушением на 5-10 минут, а не часами накопления.
+export const LAYER_REWARDS = [
+  { orders: 200, shards: 0 },
+  { orders: 800, shards: 0 },
+  { orders: 3000, shards: 0 },
+  { orders: 18000, shards: 2800 },
+  { orders: 0, shards: 0 }
+];
+
+// Постоянный прирост пассивной добычи приказов за каждый разрушенный слой:
+// королевство платит инженеру тем больше, чем дальше продвинулась осада.
+export const LAYER_ORDER_RATE_BONUS = [3, 6, 12, 24, 0];
 
 export const ZONES = {
   lower: { id: "lower", name: "Нижняя зона", from: 0, to: 0.28 },
@@ -218,6 +241,7 @@ export const UPGRADE_NODES = [
 export function createGameState() {
   const layerHp = CUBE_LAYERS.map((layer) => layer.hp);
   return {
+    version: SAVE_VERSION,
     time: 0,
     won: false,
     resources: {
@@ -675,7 +699,47 @@ export function deserializeGameState(serialized) {
   if (!parsed?.cube || !parsed?.resources || !Array.isArray(parsed.slots)) {
     throw new Error("Invalid save data");
   }
-  return parsed;
+  return migrateSaveData(parsed);
+}
+
+// Мягкая миграция сейвов между версиями баланса. Прогресс по слою сохраняется
+// пропорционально: если у игрока оставалось 40% старого HP слоя, останется 40% нового.
+export function migrateSaveData(parsed) {
+  const state = parsed;
+  const fromVersion = Number.isFinite(state.version) ? state.version : 1;
+
+  if (fromVersion < 2) {
+    const destroyedLayers = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
+
+    state.cube.layerHp = CUBE_LAYERS.map((layer, index) => {
+      const oldHp = state.cube.layerHp?.[index];
+      const oldMax = LEGACY_V1_LAYER_HP[index] ?? layer.hp;
+      if (!Number.isFinite(oldHp) || oldHp <= 0 || index < destroyedLayers) {
+        return 0;
+      }
+      const fraction = Math.max(0, Math.min(1, oldHp / oldMax));
+      return Math.max(1, Math.round(layer.hp * fraction));
+    });
+
+    // Награды за слои появились в v2: догоняем уже разрушенные слои,
+    // иначе старый игрок застрянет перед осадной пушкой без выплаты за L4.
+    if (!state.won) {
+      for (let index = 0; index < destroyedLayers; index += 1) {
+        const reward = LAYER_REWARDS[index];
+        state.resources.orders += reward?.orders ?? 0;
+        state.resources.shards += reward?.shards ?? 0;
+        state.modifiers.orderRate = (state.modifiers.orderRate ?? 0) + (LAYER_ORDER_RATE_BONUS[index] ?? 0);
+      }
+    }
+  }
+
+  const defaults = createGameState();
+  state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
+  state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
+  state.modifiers = { ...defaults.modifiers, ...state.modifiers };
+  state.stats = { ...defaults.stats, ...state.stats };
+  state.version = SAVE_VERSION;
+  return state;
 }
 
 function applyDamage(state, damage, x, y, options) {
@@ -701,6 +765,7 @@ function applyDamage(state, damage, x, y, options) {
       state.cube.layerIndex += 1;
       state.stats.layersDestroyed += 1;
       addFloatingText(state, "слой разрушен", 0.5, 0.35, "#ffe28a");
+      grantLayerReward(state, index);
       spawnBlocks(state, 16 + index * 8, x, y, 2 + index);
       if (state.cube.layerIndex < CUBE_LAYERS.length) {
         state.cube.weakSpot = makeWeakSpot(state.cube.layerIndex, state.time);
@@ -738,6 +803,47 @@ function applyDamage(state, damage, x, y, options) {
     state.cube.layerIndex = CUBE_LAYERS.length;
     addFloatingText(state, "Куб пал", 0.5, 0.34, "#ffffff");
   }
+}
+
+function grantLayerReward(state, layerIndex) {
+  const reward = LAYER_REWARDS[layerIndex];
+  const rateBonus = LAYER_ORDER_RATE_BONUS[layerIndex] ?? 0;
+  if (reward) {
+    state.resources.orders += reward.orders ?? 0;
+    state.resources.shards += reward.shards ?? 0;
+    if ((reward.orders ?? 0) > 0) {
+      addFloatingText(state, `Королевская казна: +${formatNumber(reward.orders)} приказов`, 0.5, 0.42, "#ffd76a");
+    }
+    if ((reward.shards ?? 0) > 0) {
+      addFloatingText(state, `+${formatNumber(reward.shards)} осколков от гильдии`, 0.5, 0.48, "#96e7ff");
+    }
+  }
+  if (rateBonus > 0) {
+    state.modifiers.orderRate += rateBonus;
+    addFloatingText(state, `жалование +${rateBonus} приказов/сек`, 0.5, 0.54, "#f2d075");
+  }
+}
+
+// Статус финального hard gate: активен, когда открыто Сердце куба,
+// а осадной пушки на площадках ещё нет. Используется HUD-индикатором.
+export function getSiegeGateStatus(state) {
+  const gateLayerIndex = CUBE_LAYERS.length - 1;
+  const rule = getLayerDamageRule(gateLayerIndex);
+  const requiredTypeId = rule.weaponTypes?.[0] ?? "siegeCannon";
+  const type = getWeaponType(requiredTypeId);
+  const hasRequiredWeapon = state.slots.some(
+    (slot, index) => index < state.unlockedSlots && slot.weapon?.typeId === requiredTypeId
+  );
+  const active = !state.won && state.cube.layerIndex === gateLayerIndex && !hasRequiredWeapon;
+  const cost = getWeaponCost(type, 1);
+  return {
+    active,
+    weaponName: type.name,
+    cost,
+    missingOrders: Math.max(0, Math.ceil((cost.orders ?? 0) - state.resources.orders)),
+    missingShards: Math.max(0, Math.ceil((cost.shards ?? 0) - state.resources.shards)),
+    affordable: canAfford(state, cost)
+  };
 }
 
 function resolveWeaponDamage(state, weapon, quality, hitWeakSpot) {
