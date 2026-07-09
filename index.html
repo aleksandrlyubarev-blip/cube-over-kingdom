@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Куб над Королевством</title>
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="game-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>Куб над Королевством</h1>
+            <p id="stageLabel">Внешняя каменная кора</p>
+          </div>
+        </div>
+        <div class="meters" aria-live="polite">
+          <div class="meter">
+            <span>Приказы</span>
+            <strong id="ordersValue">0</strong>
+          </div>
+          <div class="meter">
+            <span>Осколки</span>
+            <strong id="shardsValue">0</strong>
+          </div>
+          <div class="meter wide">
+            <span>Куб</span>
+            <strong id="hpValue">0</strong>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button id="saveButton" class="icon-button" type="button" title="Сохранить">S</button>
+          <button id="resetButton" class="icon-button danger" type="button" title="Новая игра">R</button>
+        </div>
+      </header>
+
+      <section class="stage-wrap" aria-label="Игровое поле">
+        <canvas id="gameCanvas" width="1280" height="720"></canvas>
+        <div class="camera-panel">
+          <button id="cameraUp" class="icon-button" type="button" title="Камера выше">▲</button>
+          <input id="cameraSlider" type="range" min="0" max="0.82" step="0.01" value="0" aria-label="Высота камеры" />
+          <button id="cameraDown" class="icon-button" type="button" title="Камера ниже">▼</button>
+          <button id="cameraHome" class="pill-button" type="button">Поле</button>
+        </div>
+        <div id="aimBadge" class="aim-badge hidden">Прицеливание</div>
+        <div id="toast" class="toast hidden"></div>
+      </section>
+
+      <section class="command-panel">
+        <div class="slots-card">
+          <div class="panel-heading">
+            <span>Площадки</span>
+            <strong id="slotCount">2/8</strong>
+          </div>
+          <div id="slotRow" class="slot-row"></div>
+        </div>
+
+        <div class="arsenal-card">
+          <div class="panel-heading">
+            <span>Орудия</span>
+            <strong id="selectedWeaponName">Камнемёт</strong>
+          </div>
+          <div id="weaponCards" class="weapon-cards"></div>
+        </div>
+
+        <div class="actions-card">
+          <div class="panel-heading">
+            <span id="selectedSlotName">Слот 1</span>
+            <strong id="weaponState">Пусто</strong>
+          </div>
+          <div class="action-grid">
+            <button id="buildButton" class="primary-button" type="button">Построить</button>
+            <button id="upgradeButton" class="plain-button" type="button">Ур. +</button>
+            <button id="repairButton" class="plain-button" type="button">Ремонт</button>
+            <button id="manualAimButton" class="plain-button" type="button">Прицел</button>
+          </div>
+          <button id="labyrinthButton" class="labyrinth-button" type="button">Лабиринт улучшений</button>
+          <div id="costLine" class="cost-line">35 приказов</div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="labyrinthDialog" class="game-dialog">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2>Лабиринт прокачки</h2>
+          <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
+        </header>
+        <div id="upgradeGrid" class="upgrade-grid"></div>
+      </form>
+    </dialog>
+
+    <dialog id="victoryDialog" class="game-dialog victory-dialog">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2>Куб разрушен</h2>
+          <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
+        </header>
+        <div id="victoryStats" class="victory-stats"></div>
+        <button id="victoryReset" class="primary-button" value="close" type="submit">Новая осада</button>
+      </form>
+    </dialog>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+.env
+.env.*
+.playwright-cli/
+dist/
+output/playwright/
+output/balance/latest.json
