@@ -33,7 +33,7 @@
         </div>
         <div class="top-actions">
           <button id="saveButton" class="icon-button" type="button" title="Сохранить">S</button>
-          <button id="resetButton" class="icon-button danger" type="button" title="Новая игра">R</button>
+          <button id="resetButton" class="reset-action danger" type="button" title="Начать заново">Новая</button>
         </div>
       </header>
 
@@ -46,6 +46,7 @@
           <button id="cameraHome" class="pill-button" type="button">Поле</button>
         </div>
         <div id="aimBadge" class="aim-badge hidden">Прицеливание</div>
+        <div id="hintPanel" class="hint-panel hidden"></div>
         <div id="toast" class="toast hidden"></div>
       </section>
 
@@ -78,6 +79,7 @@
             <button id="manualAimButton" class="plain-button" type="button">Прицел</button>
           </div>
           <button id="labyrinthButton" class="labyrinth-button" type="button">Лабиринт улучшений</button>
+          <div id="zoneLine" class="zone-line"></div>
           <div id="costLine" class="cost-line">35 приказов</div>
         </div>
       </section>
@@ -99,8 +101,9 @@
           <h2>Куб разрушен</h2>
           <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
         </header>
+        <p class="victory-copy">Осада завершена. Можно изучить статистику или начать новую кампанию с чистого куба.</p>
         <div id="victoryStats" class="victory-stats"></div>
-        <button id="victoryReset" class="primary-button" value="close" type="submit">Новая осада</button>
+        <button id="victoryReset" class="primary-button" value="close" type="submit">Играть снова</button>
       </form>
     </dialog>
 

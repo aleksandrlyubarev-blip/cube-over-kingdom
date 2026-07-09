@@ -425,6 +425,39 @@ test("v1 saves migrate proportional layer progress and retroactive layer rewards
   );
 });
 
+test("v1 saves without modifiers still migrate and receive retroactive rewards", () => {
+  const legacy = {
+    time: 120,
+    won: false,
+    resources: { orders: 100, shards: 10 },
+    stats: {},
+    cube: {
+      layerIndex: 1,
+      layerHp: [0, LEGACY_V1_LAYER_HP[1], LEGACY_V1_LAYER_HP[2], LEGACY_V1_LAYER_HP[3], LEGACY_V1_LAYER_HP[4]],
+      totalHp: LEGACY_V1_LAYER_HP.reduce((sum, hp) => sum + hp, 0),
+      damageMarks: [],
+      weakSpot: { x: 0.5, y: 0.5, age: 0, bornAt: 0 }
+    },
+    slots: Array.from({ length: 8 }, (_, id) => ({ id, weapon: null })),
+    unlockedSlots: 2,
+    selectedWeaponType: "stoneThrower",
+    selectedSlot: 0,
+    manualAimWeaponId: null,
+    blocks: [],
+    projectiles: [],
+    floatingTexts: [],
+    purchasedNodes: [],
+    nextId: 2
+  };
+
+  const state = deserializeGameState(JSON.stringify(legacy));
+
+  assert.equal(state.version, SAVE_VERSION);
+  assert.equal(state.resources.orders, 100 + LAYER_REWARDS[0].orders);
+  assert.equal(state.modifiers.orderRate, LAYER_ORDER_RATE_BONUS[0]);
+  assert.equal(state.modifiers.autoCollect, false);
+});
+
 test("current-version saves round-trip without duplicate rewards", () => {
   const state = createGameState();
   state.resources.orders = 777;
