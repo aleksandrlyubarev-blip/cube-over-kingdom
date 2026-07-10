@@ -5,6 +5,7 @@ import {
   calculateBudgetPartition,
   calculateHardGateEconomy,
   calculateHpReshuffle,
+  calculateObservedBudgetStatus,
   scaleTargetDurations,
   summarizeProfileGuardrails
 } from "../src/balanceSolver.js";
@@ -144,9 +145,94 @@ test("hard-gate economy reports acquisition drift separately from HP", () => {
   assert.equal(result.rows[0].observedSeconds, 600);
   assert.equal(result.rows[0].targetSeconds, 120);
   assert.equal(result.rows[0].excessSeconds, 480);
+  assert.equal(result.rows[0].status, "too-long");
   assert.equal(result.rows[0].suggestedCost.orders, 1900);
   assert.equal(result.rows[0].suggestedCost.shards, 400);
   assert.equal(result.rows[0].limitingResource, "shards");
+});
+
+test("hard-gate economy treats waits below the target band as too short", () => {
+  const tooShort = calculateHardGateEconomy({
+    layerDurations: [
+      {
+        layerIndex: 4,
+        layerName: "heart",
+        hardGate: true,
+        acquisitionWait: 6,
+        resourcesAtLayerStart: { orders: 0 },
+        resourcesAtGateOpen: { orders: 0 },
+        gateCost: { orders: 100 }
+      }
+    ],
+    targets: [{ layerIndex: 4, seconds: 300 }]
+  });
+  const within = calculateHardGateEconomy({
+    layerDurations: [
+      {
+        layerIndex: 4,
+        layerName: "heart",
+        hardGate: true,
+        acquisitionWait: 300,
+        resourcesAtLayerStart: { orders: 0 },
+        resourcesAtGateOpen: { orders: 0 },
+        gateCost: { orders: 100 }
+      }
+    ],
+    targets: [{ layerIndex: 4, seconds: 300 }]
+  });
+
+  assert.equal(tooShort.rows[0].targetMinSeconds, 240);
+  assert.equal(tooShort.rows[0].targetMaxSeconds, 360);
+  assert.equal(tooShort.rows[0].status, "too-short");
+  assert.equal(tooShort.ok, false);
+  assert.equal(within.rows[0].status, "within");
+  assert.equal(within.ok, true);
+});
+
+test("hard-gate economy labels an already funded gate without a false cost recommendation", () => {
+  const result = calculateHardGateEconomy({
+    layerDurations: [
+      {
+        layerIndex: 4,
+        layerName: "heart",
+        hardGate: true,
+        acquisitionWait: 6,
+        resourcesAtLayerStart: { orders: 1000, shards: 100 },
+        resourcesAtGateOpen: { orders: 500, shards: 50 },
+        gateCost: { orders: 500, shards: 50 }
+      }
+    ],
+    targets: [{ layerIndex: 4, seconds: 300 }]
+  });
+
+  assert.equal(result.rows[0].status, "too-short");
+  assert.equal(result.rows[0].fundingStatus, "prefunded");
+  assert.equal(result.rows[0].limitingResource, null);
+  assert.equal(result.rows[0].suggestedCost, null);
+});
+
+test("observed budget reports total, combat, and acquisition drift independently", () => {
+  const partition = {
+    totalTargetSeconds: 1000,
+    combatTargetSeconds: 800,
+    acquisitionTargetSeconds: 200
+  };
+  const aligned = calculateObservedBudgetStatus({
+    profile: { elapsedSeconds: 1000, combatElapsedSeconds: 800, acquisitionWaitSeconds: 200 },
+    partition
+  });
+  const acquisitionShort = calculateObservedBudgetStatus({
+    profile: { elapsedSeconds: 810, combatElapsedSeconds: 800, acquisitionWaitSeconds: 10 },
+    partition
+  });
+
+  assert.equal(aligned.ok, true);
+  assert.equal(aligned.metrics.total.status, "within");
+  assert.equal(aligned.metrics.combat.status, "within");
+  assert.equal(aligned.metrics.acquisition.status, "within");
+  assert.equal(acquisitionShort.metrics.combat.status, "within");
+  assert.equal(acquisitionShort.metrics.acquisition.status, "too-short");
+  assert.equal(acquisitionShort.ok, false);
 });
 
 test("profile guardrails flag spread and optimizer minimum", () => {

@@ -1,6 +1,6 @@
 # Balance Snapshot
 
-Generated: 2026-07-09T03:23:55.534Z
+Generated: 2026-07-10T16:01:09.430Z
 
 ## Theoretical 4-Slot Pressure
 
@@ -24,17 +24,21 @@ Generated: 2026-07-09T03:23:55.534Z
 | Hard-gate acquisition target | 5m 0s |
 | Soft acquisition target | 17m 45s |
 | Projected combat + acquisition | 3h 24m + 22m 45s = 3h 47m |
-| Budget guard OK | yes |
+| Budget construction guard OK | yes |
+| Observed total | 3h 23m / 3h 47m (within) |
+| Observed combat | 3h 22m / 3h 24m (within) |
+| Observed acquisition | 1m 49s / 22m 45s (too-short) |
+| Observed budget guard OK | no |
 
 ## Guardrails
 
 | Metric | Value |
 | --- | ---: |
 | Completed profiles | 3 |
-| Total spread | 1.9x |
-| Combat spread | 1.89x |
-| Optimizer total time | 1h 47m |
-| Optimizer combat time | 1h 46m |
+| Total spread | 2.11x |
+| Combat spread | 2.1x |
+| Optimizer total time | 1h 36m |
+| Optimizer combat time | 1h 36m |
 | Total spread OK | yes |
 | Combat spread OK | yes |
 | Total optimizer OK | yes |
@@ -56,24 +60,24 @@ Total HP: 9693000 current -> 9862549 suggested at 90% combat budget.
 
 ## Hard-Gate Acquisition Economy
 
-| Layer | Observed wait | Target wait | Limiting resource | Suggested cost cap | OK |
-| --- | ---: | ---: | --- | ---: | --- |
-| Сердце куба | 6s | 5m 0s | orders | 23.5K orders / 3.8K shards | yes |
+| Layer | Observed wait | Target band | Funding | Limiting resource | Suggested cost cap | Status |
+| --- | ---: | ---: | --- | --- | ---: | --- |
+| Сердце куба | 6s | 4m 0s-6m 0s | prefunded | - | - | too-short |
 
 ### Suggested-HP Preview
 
 | Profile | Result | Total | Acq | Combat | Remaining HP |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Пассивный | win | 3h 25m | 2m 1s | 3h 23m | 0 |
-| Средний | win | 2h 21m | 1m 9s | 2h 19m | 0 |
-| Оптимизатор | win | 1h 48m | 26s | 1h 47m | 0 |
+| Пассивный под присмотром | win | 3h 25m | 2m 1s | 3h 23m | 0 |
+| Средний | win | 2h 14m | 1m 11s | 2h 13m | 0 |
+| Оптимизатор | win | 1h 38m | 17s | 1h 37m | 0 |
 
-Suggested preview total spread: 1.9x; optimizer: 1h 48m; ok: yes.
-Suggested preview combat spread: 1.89x; optimizer combat: 1h 47m; ok: yes.
+Suggested preview total spread: 2.1x; optimizer: 1h 38m; ok: yes.
+Suggested preview combat spread: 2.08x; optimizer combat: 1h 37m; ok: yes.
 
 ## Profiles
 
-### Пассивный
+### Пассивный под присмотром
 
 Result: win in 3h 23m; combat: 3h 22m; acquisition: 1m 49s; remaining HP: 0.
 
@@ -83,8 +87,11 @@ Result: win in 3h 23m; combat: 3h 22m; acquisition: 1m 49s; remaining HP: 0.
 | Shots | 5907 |
 | Spawned blocks | 47498 |
 | Collected blocks | 47383 |
-| Shards collected | 321821 |
+| Shards collected | 321731 |
 | Manual weak hits | 0 |
+| Manual scheduled | 0 |
+| Manual not ready | 0 |
+| Manual no eligible weapon | 0 |
 
 | Layer | Total | Acq | Combat | Ended at |
 | --- | ---: | ---: | ---: | ---: |
@@ -96,43 +103,56 @@ Result: win in 3h 23m; combat: 3h 22m; acquisition: 1m 49s; remaining HP: 0.
 
 ### Средний
 
-Result: win in 2h 19m; combat: 2h 18m; acquisition: 1m 8s; remaining HP: 0.
+Result: win in 2h 13m; combat: 2h 12m; acquisition: 1m 7s; remaining HP: 0.
 
 | Metric | Value |
 | --- | ---: |
 | Damage | 9693000 |
-| Shots | 4437 |
-| Spawned blocks | 39280 |
-| Collected blocks | 39215 |
-| Shards collected | 532278 |
-| Manual weak hits | 0 |
+| Shots | 4218 |
+| Spawned blocks | 39469 |
+| Collected blocks | 39454 |
+| Shards collected | 721523 |
+| Manual weak hits | 114 |
+| Manual scheduled | 444 |
+| Manual not ready | 175 |
+| Manual no eligible weapon | 330 |
 
 | Layer | Total | Acq | Combat | Ended at |
 | --- | ---: | ---: | ---: | ---: |
 | Внешняя каменная кора | 12m 53s | 9s | 12m 44s | 12m 53s |
 | Плотная кладка | 35m 7s | 58s | 34m 9s | 48m 0s |
 | Астральный гранит | 51m 15s | 0s | 51m 15s | 1h 39m |
-| Внутреннее ядро | 12m 17s | 0s | 12m 17s | 1h 51m |
-| Сердце куба | 27m 39s | 1s | 27m 38s | 2h 19m |
+| Внутреннее ядро | 10m 45s | 0s | 10m 45s | 1h 50m |
+| Сердце куба | 23m 24s | 0s | 23m 24s | 2h 13m |
 
 ### Оптимизатор
 
-Result: win in 1h 47m; combat: 1h 46m; acquisition: 26s; remaining HP: 0.
+Result: win in 1h 36m; combat: 1h 36m; acquisition: 41s; remaining HP: 0.
 
 | Metric | Value |
 | --- | ---: |
 | Damage | 9693000 |
-| Shots | 2919 |
-| Spawned blocks | 29890 |
-| Collected blocks | 29890 |
-| Shards collected | 556944 |
-| Manual weak hits | 0 |
+| Shots | 2591 |
+| Spawned blocks | 30731 |
+| Collected blocks | 30731 |
+| Shards collected | 855381 |
+| Manual weak hits | 212 |
+| Manual scheduled | 580 |
+| Manual not ready | 316 |
+| Manual no eligible weapon | 368 |
 
 | Layer | Total | Acq | Combat | Ended at |
 | --- | ---: | ---: | ---: | ---: |
-| Внешняя каменная кора | 5m 19s | 3s | 5m 16s | 5m 19s |
-| Плотная кладка | 29m 55s | 22s | 29m 33s | 35m 14s |
-| Астральный гранит | 29m 13s | 0s | 29m 13s | 1h 4m |
-| Внутреннее ядро | 13m 58s | 0s | 13m 58s | 1h 18m |
-| Сердце куба | 28m 43s | 1s | 28m 42s | 1h 47m |
+| Внешняя каменная кора | 4m 41s | 3s | 4m 38s | 4m 41s |
+| Плотная кладка | 30m 6s | 4s | 30m 2s | 34m 47s |
+| Астральный гранит | 29m 20s | 0s | 29m 20s | 1h 4m |
+| Внутреннее ядро | 11m 21s | 0s | 11m 21s | 1h 15m |
+| Сердце куба | 21m 16s | 34s | 20m 42s | 1h 36m |
+
+
+## Diagnostics (Excluded From Solver Guardrails)
+
+### Запущенный лагерь: 3x30 мин
+
+Result: not finished after 1h 30m active time; remaining HP: 9109665; collected shards: 15599.
 

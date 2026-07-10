@@ -47,6 +47,32 @@ export function calculateBudgetPartition(options = {}) {
   };
 }
 
+export function calculateObservedBudgetStatus({ profile, partition, toleranceRatio = 0.2 }) {
+  if (!profile || !partition) {
+    throw new Error("profile and partition are required");
+  }
+  if (!Number.isFinite(toleranceRatio) || toleranceRatio < 0 || toleranceRatio >= 1) {
+    throw new Error("toleranceRatio must be between 0 and 1");
+  }
+
+  const metrics = {
+    total: buildTargetStatus(profile.elapsedSeconds, partition.totalTargetSeconds, toleranceRatio),
+    combat: buildTargetStatus(profile.combatElapsedSeconds, partition.combatTargetSeconds, toleranceRatio),
+    acquisition: buildTargetStatus(
+      profile.acquisitionWaitSeconds,
+      partition.acquisitionTargetSeconds,
+      toleranceRatio
+    )
+  };
+
+  return {
+    profileId: profile.id ?? null,
+    toleranceRatio,
+    metrics,
+    ok: Object.values(metrics).every((metric) => metric.ok)
+  };
+}
+
 export function calculateHpReshuffle({ layers, layerDurations, targetDurations = TARGET_LAYER_DURATIONS }) {
   if (!Array.isArray(layers) || !Array.isArray(layerDurations) || layers.length !== layerDurations.length) {
     throw new Error("layers and layerDurations must have the same length");
@@ -118,21 +144,31 @@ export function calculateHardGateEconomy({ layerDurations, targets = TARGET_HARD
     throw new Error("layerDurations must be an array");
   }
 
-  const targetByLayer = new Map(targets.map((target) => [target.layerIndex, target.seconds]));
+  const targetByLayer = new Map(targets.map((target) => [target.layerIndex, target]));
   const rows = layerDurations
     .filter((duration) => duration.hardGate)
     .map((duration) => {
       const observedSeconds =
         duration.acquisitionWait ??
         Math.max(0, (duration.duration ?? 0) - (duration.combatDuration ?? duration.solverDuration ?? 0));
-      const targetSeconds = targetByLayer.get(duration.layerIndex) ?? 2 * 60;
+      const target = targetByLayer.get(duration.layerIndex);
+      const targetSeconds = target?.seconds ?? 2 * 60;
+      const toleranceSeconds = target?.toleranceSeconds ?? 60;
+      const targetMinSeconds = Math.max(0, targetSeconds - toleranceSeconds);
+      const targetMaxSeconds = targetSeconds + toleranceSeconds;
+      const status =
+        observedSeconds < targetMinSeconds
+          ? "too-short"
+          : observedSeconds > targetMaxSeconds
+            ? "too-long"
+            : "within";
       const gateCost = duration.gateCost ?? {};
       const resourcesAtLayerStart = duration.resourcesAtLayerStart ?? {};
       const resourcesAtGateOpen = duration.resourcesAtGateOpen ?? {};
       const resourcesBeforePurchase = mergeResourceValues(resourcesAtGateOpen, gateCost, (a, b) => a + b);
       const resourceKeys = getResourceKeys(gateCost, resourcesAtLayerStart, resourcesBeforePurchase);
       const resourceRates = {};
-      const suggestedCost = {};
+      const calculatedCostCap = {};
       const timeToAfford = {};
 
       for (const key of resourceKeys) {
@@ -143,21 +179,31 @@ export function calculateHardGateEconomy({ layerDurations, targets = TARGET_HARD
         const targetBudget = start + rate * targetSeconds;
         const deficit = Math.max(0, currentCost - start);
         resourceRates[key] = rate;
-        suggestedCost[key] = Math.max(0, Math.min(currentCost, Math.floor(targetBudget)));
+        calculatedCostCap[key] = Math.max(0, Math.min(currentCost, Math.floor(targetBudget)));
         timeToAfford[key] = deficit === 0 ? 0 : rate > 0 ? deficit / rate : Number.POSITIVE_INFINITY;
       }
 
-      const limitingResource = resourceKeys
-        .map((key) => ({ key, seconds: timeToAfford[key] }))
-        .sort((a, b) => b.seconds - a.seconds)[0]?.key;
+      const fundedResourceKeys = resourceKeys.filter((key) => (gateCost[key] ?? 0) > 0);
+      const prefunded =
+        fundedResourceKeys.length > 0 &&
+        fundedResourceKeys.every((key) => (resourcesAtLayerStart[key] ?? 0) >= (gateCost[key] ?? 0));
+      const limitingResource = prefunded
+        ? null
+        : (resourceKeys
+            .map((key) => ({ key, seconds: timeToAfford[key] }))
+            .sort((a, b) => b.seconds - a.seconds)[0]?.key ?? null);
 
       return {
         layerIndex: duration.layerIndex,
         layerName: duration.layerName,
         observedSeconds,
         targetSeconds,
+        targetMinSeconds,
+        targetMaxSeconds,
+        toleranceSeconds,
+        status,
         excessSeconds: observedSeconds - targetSeconds,
-        ok: observedSeconds <= targetSeconds,
+        ok: status === "within",
         gateOpenedAt: duration.gateOpenedAt ?? null,
         gateOpenedBy: duration.gateOpenedBy ?? null,
         gateCost,
@@ -165,7 +211,8 @@ export function calculateHardGateEconomy({ layerDurations, targets = TARGET_HARD
         resourcesAtGateOpen,
         resourcesBeforePurchase,
         resourceRates,
-        suggestedCost,
+        fundingStatus: prefunded ? "prefunded" : "accumulating",
+        suggestedCost: prefunded ? null : calculatedCostCap,
         timeToAfford,
         limitingResource
       };
@@ -176,6 +223,32 @@ export function calculateHardGateEconomy({ layerDurations, targets = TARGET_HARD
     observedTotalSeconds: sumBy(rows, "observedSeconds"),
     targetTotalSeconds: sumBy(rows, "targetSeconds"),
     ok: rows.every((row) => row.ok)
+  };
+}
+
+function buildTargetStatus(observedSeconds, targetSeconds, toleranceRatio) {
+  if (
+    !Number.isFinite(observedSeconds) ||
+    observedSeconds < 0 ||
+    !Number.isFinite(targetSeconds) ||
+    targetSeconds < 0
+  ) {
+    throw new Error("observed and target seconds must be finite non-negative values");
+  }
+  const minSeconds = targetSeconds * (1 - toleranceRatio);
+  const maxSeconds = targetSeconds * (1 + toleranceRatio);
+  const status =
+    observedSeconds < minSeconds ? "too-short" : observedSeconds > maxSeconds ? "too-long" : "within";
+
+  return {
+    observedSeconds,
+    targetSeconds,
+    minSeconds,
+    maxSeconds,
+    driftSeconds: observedSeconds - targetSeconds,
+    ratio: targetSeconds > 0 ? observedSeconds / targetSeconds : observedSeconds === 0 ? 1 : null,
+    status,
+    ok: status === "within"
   };
 }
 
