@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AUTO_COLLECT_RATE,
   CUBE_LAYERS,
   LAYER_ORDER_RATE_BONUS,
   LAYER_REWARDS,
   LEGACY_V1_LAYER_HP,
+  MAX_VISUAL_BLOCKS,
   SAVE_VERSION,
+  addBlocksToBank,
+  collectBankedBlocks,
   deserializeGameState,
+  getBankedBlockCount,
   getCurrentLayerProgress,
   getSiegeGateStatus,
   getLayerVulnerabilitySummary,
@@ -100,6 +105,84 @@ test("collecting a fallen block grants cube shards", () => {
   assert.equal(result.gained, 4);
   assert.equal(state.resources.shards, 4);
   assert.equal(state.stats.shardsCollected, 4);
+});
+
+test("block overflow is compacted without losing pending shard value", () => {
+  const state = createGameState();
+  state.resources.orders = 1000;
+  state.resources.shards = 100;
+  state.cube.layerHp[0] = 1_000_000;
+  buildWeapon(state, 0, "ballista");
+
+  for (let index = 0; index < 5; index += 1) {
+    state.slots[0].weapon.cooldown = 0;
+    const target = state.cube.weakSpot;
+    const result = manualAimAt(state, target.x, target.y, 0);
+    assert.equal(result.ok, true);
+  }
+
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(getBankedBlockCount(state), state.stats.spawnedBlocks - MAX_VISUAL_BLOCKS);
+
+  const visualValue = state.blocks.reduce(
+    (sum, block) => sum + Math.max(1, Math.round(block.value * state.modifiers.shardYield)),
+    0
+  );
+  const banked = collectBankedBlocks(state);
+  assert.equal(banked.collected, state.stats.spawnedBlocks - MAX_VISUAL_BLOCKS);
+  assert.equal(state.stats.shardsCollected, banked.gained);
+
+  for (const block of [...state.blocks]) {
+    collectBlock(state, block.id);
+  }
+  assert.equal(state.stats.shardsCollected, visualValue + banked.gained);
+});
+
+test("banked blocks preserve per-block shard rounding", () => {
+  const state = createGameState();
+  state.modifiers.shardYield = 1.5;
+  addBlocksToBank(state, 2, 3);
+  addBlocksToBank(state, 5, 2);
+
+  const result = collectBankedBlocks(state);
+
+  assert.equal(result.collected, 5);
+  assert.equal(result.gained, 25);
+  assert.equal(getBankedBlockCount(state), 0);
+  assert.equal(state.resources.shards, 25);
+});
+
+test("auto collect rate is independent of tick frequency", () => {
+  const simulate = (dt, ticks) => {
+    const state = createGameState();
+    state.modifiers.autoCollect = true;
+    addBlocksToBank(state, 1, 100);
+    for (let index = 0; index < ticks; index += 1) {
+      tickGame(state, dt, () => 0.5);
+    }
+    return state;
+  };
+
+  const oneTick = simulate(1, 1);
+  const sixtyTicks = simulate(1 / 60, 60);
+
+  assert.equal(oneTick.stats.collectedBlocks, AUTO_COLLECT_RATE);
+  assert.equal(sixtyTicks.stats.collectedBlocks, AUTO_COLLECT_RATE);
+  assert.equal(oneTick.resources.shards, sixtyTicks.resources.shards);
+  assert.equal(getBankedBlockCount(oneTick), getBankedBlockCount(sixtyTicks));
+});
+
+test("auto collect does not bank unused whole-block credit", () => {
+  const state = createGameState();
+  state.modifiers.autoCollect = true;
+
+  tickGame(state, 10, () => 0.5);
+  addBlocksToBank(state, 1, 2);
+  tickGame(state, 0, () => 0.5);
+  assert.equal(state.stats.collectedBlocks, 0);
+
+  tickGame(state, 1 / AUTO_COLLECT_RATE, () => 0.5);
+  assert.equal(state.stats.collectedBlocks, 1);
 });
 
 test("manual ballista hit near a weak spot does triple damage and drops a shower", () => {
@@ -515,6 +598,34 @@ test("v1 saves without modifiers still migrate and receive retroactive rewards",
   assert.equal(state.modifiers.autoCollect, false);
 });
 
+test("v2 saves compact excess visual blocks into the block bank", () => {
+  const legacy = createGameState();
+  legacy.version = 2;
+  delete legacy.blockBank;
+  legacy.blocks = Array.from({ length: 150 }, (_, id) => ({
+    id,
+    x: 0.5,
+    y: 0.76,
+    vx: 0,
+    vy: 0,
+    spin: 0,
+    vSpin: 0,
+    size: 0.02,
+    value: id < 100 ? 2 : 5,
+    resting: true
+  }));
+
+  const state = deserializeGameState(JSON.stringify(legacy));
+
+  assert.equal(state.version, SAVE_VERSION);
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(getBankedBlockCount(state), 54);
+  assert.deepEqual(state.blockBank.buckets, [
+    [2, 4],
+    [5, 50]
+  ]);
+});
+
 test("current-version saves round-trip without duplicate rewards", () => {
   const state = createGameState();
   state.resources.orders = 777;
@@ -530,4 +641,14 @@ test("current-version saves round-trip without duplicate rewards", () => {
 
 test("invalid saves are rejected", () => {
   assert.throws(() => deserializeGameState("{}"));
+});
+
+test("future-version saves are rejected instead of being downgraded", () => {
+  const future = createGameState();
+  future.version = SAVE_VERSION + 1;
+
+  assert.throws(
+    () => deserializeGameState(JSON.stringify(future)),
+    /newer version/
+  );
 });

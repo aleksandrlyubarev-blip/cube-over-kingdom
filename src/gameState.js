@@ -8,7 +8,9 @@ export const CUBE_LAYERS = [
   { id: "heart", name: "Сердце куба", hp: 4600000, color: "#5d3d58" }
 ];
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
+export const MAX_VISUAL_BLOCKS = 96;
+export const AUTO_COLLECT_RATE = 8;
 
 // HP слоёв, с которыми жили сейвы v1 (до версионирования). Нужны миграции,
 // чтобы пересчитать прогресс слоя пропорционально при изменении баланса.
@@ -278,6 +280,10 @@ export function createGameState() {
     selectedSlot: 0,
     manualAimWeaponId: null,
     blocks: [],
+    blockBank: {
+      buckets: [],
+      autoCollectCredit: 0
+    },
     projectiles: [],
     floatingTexts: [],
     purchasedNodes: [],
@@ -718,9 +724,18 @@ export function tickGame(state, dt, random = Math.random) {
   }
 
   if (state.modifiers.autoCollect) {
+    const bank = ensureBlockBank(state);
+    const accrued = bank.autoCollectCredit + Math.max(0, dt) * AUTO_COLLECT_RATE;
+    const due = Math.max(0, Math.floor(accrued + 1e-9));
+    bank.autoCollectCredit = Math.max(0, accrued - due);
     const resting = state.blocks.filter((block) => block.resting);
-    for (const block of resting.slice(0, Math.ceil(dt * 8))) {
+    const visualBlocks = resting.slice(0, due);
+    for (const block of visualBlocks) {
       collectBlock(state, block.id);
+    }
+    const remaining = due - visualBlocks.length;
+    if (remaining > 0) {
+      collectBankedBlocks(state, remaining);
     }
   }
 
@@ -741,6 +756,57 @@ export function collectBlock(state, blockId) {
   return { ok: true, gained };
 }
 
+export function addBlocksToBank(state, value, count = 1) {
+  const normalizedCount = Math.max(0, Math.floor(count));
+  if (normalizedCount === 0) {
+    return 0;
+  }
+  const normalizedValue = Math.max(1, Number.isFinite(value) ? value : 1);
+  const bank = ensureBlockBank(state);
+  const bucket = bank.buckets.find(([bucketValue]) => bucketValue === normalizedValue);
+  if (bucket) {
+    bucket[1] += normalizedCount;
+  } else {
+    bank.buckets.push([normalizedValue, normalizedCount]);
+    bank.buckets.sort((left, right) => left[0] - right[0]);
+  }
+  return normalizedCount;
+}
+
+export function getBankedBlockCount(state) {
+  return ensureBlockBank(state).buckets.reduce((sum, [, count]) => sum + count, 0);
+}
+
+export function collectBankedBlocks(state, maxCount = Number.POSITIVE_INFINITY) {
+  const bank = ensureBlockBank(state);
+  let remaining = Number.isFinite(maxCount) ? Math.max(0, Math.floor(maxCount)) : Number.POSITIVE_INFINITY;
+  let collected = 0;
+  let gained = 0;
+
+  for (const bucket of bank.buckets) {
+    if (remaining <= 0) {
+      break;
+    }
+    const take = Math.min(bucket[1], remaining);
+    if (take <= 0) {
+      continue;
+    }
+    bucket[1] -= take;
+    remaining -= take;
+    collected += take;
+    gained += take * Math.max(1, Math.round(bucket[0] * state.modifiers.shardYield));
+  }
+
+  bank.buckets = bank.buckets.filter(([, count]) => count > 0);
+  if (collected > 0) {
+    state.resources.shards += gained;
+    state.stats.collectedBlocks += collected;
+    state.stats.shardsCollected += gained;
+    addFloatingText(state, `Куча: +${gained} оск.`, 0.88, 0.73, "#96e7ff");
+  }
+  return { ok: collected > 0, collected, gained };
+}
+
 export function serializeGameState(state) {
   return JSON.stringify(state);
 }
@@ -758,6 +824,9 @@ export function deserializeGameState(serialized) {
 export function migrateSaveData(parsed) {
   const state = parsed;
   const fromVersion = Number.isFinite(state.version) ? state.version : 1;
+  if (fromVersion > SAVE_VERSION) {
+    throw new Error("Save data is from a newer version");
+  }
   const defaults = createGameState();
 
   state.modifiers = { ...defaults.modifiers, ...state.modifiers };
@@ -787,6 +856,10 @@ export function migrateSaveData(parsed) {
       }
     }
   }
+
+  state.blocks = Array.isArray(state.blocks) ? state.blocks : [];
+  state.blockBank = normalizeBlockBank(state.blockBank);
+  compactExcessBlocks(state);
 
   state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
   state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
@@ -960,7 +1033,7 @@ function spawnBlocks(state, count, x, y, value = 1) {
   state.stats.spawnedBlocks += capped;
   for (let index = 0; index < capped; index += 1) {
     const spread = (index / Math.max(1, capped - 1) - 0.5) * 0.28;
-    state.blocks.push({
+    const block = {
       id: state.nextId++,
       x: clamp01(x + spread + (Math.random() - 0.5) * 0.05),
       y: clamp01(y + (Math.random() - 0.5) * 0.04),
@@ -971,7 +1044,49 @@ function spawnBlocks(state, count, x, y, value = 1) {
       size: 0.014 + Math.random() * 0.014,
       value,
       resting: false
-    });
+    };
+    if (state.blocks.length < MAX_VISUAL_BLOCKS) {
+      state.blocks.push(block);
+    } else {
+      addBlocksToBank(state, value, 1);
+    }
+  }
+}
+
+function ensureBlockBank(state) {
+  if (!state.blockBank || !Array.isArray(state.blockBank.buckets)) {
+    state.blockBank = normalizeBlockBank(state.blockBank);
+  }
+  return state.blockBank;
+}
+
+function normalizeBlockBank(source) {
+  const totals = new Map();
+  for (const entry of source?.buckets ?? []) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      continue;
+    }
+    const value = Number(entry[0]);
+    const count = Math.floor(Number(entry[1]));
+    if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(count) || count <= 0) {
+      continue;
+    }
+    totals.set(value, (totals.get(value) ?? 0) + count);
+  }
+  const credit = Number(source?.autoCollectCredit);
+  return {
+    buckets: [...totals.entries()].sort((left, right) => left[0] - right[0]),
+    autoCollectCredit: Number.isFinite(credit) && credit > 0 ? credit % 1 : 0
+  };
+}
+
+function compactExcessBlocks(state) {
+  if (state.blocks.length <= MAX_VISUAL_BLOCKS) {
+    return;
+  }
+  const excess = state.blocks.splice(MAX_VISUAL_BLOCKS);
+  for (const block of excess) {
+    addBlocksToBank(state, block.value, 1);
   }
 }
 
