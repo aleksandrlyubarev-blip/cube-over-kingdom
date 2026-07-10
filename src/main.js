@@ -6,13 +6,16 @@ import {
   buildWeapon,
   buyUpgradeNode,
   canBuyUpgradeNode,
+  collectBankedBlocks,
   collectBlock,
   createGameState,
   deserializeGameState,
   formatNumber,
   getCurrentLayer,
   getCurrentLayerProgress,
+  getBankedBlockCount,
   getLayerVulnerabilitySummary,
+  getReplacementPreview,
   getRemainingCubeHp,
   getSiegeGateStatus,
   getUnlockedWeaponTypes,
@@ -27,8 +30,10 @@ import {
   tickGame,
   upgradeWeapon
 } from "./gameState.js";
+import { readSave, removeSave, writeSave } from "./persistence.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
+const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
 
 const canvas = document.querySelector("#gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -66,9 +71,15 @@ const ui = {
   resetButton: document.querySelector("#resetButton"),
   victoryDialog: document.querySelector("#victoryDialog"),
   victoryStats: document.querySelector("#victoryStats"),
-  victoryReset: document.querySelector("#victoryReset")
+  victoryReset: document.querySelector("#victoryReset"),
+  confirmDialog: document.querySelector("#confirmDialog"),
+  confirmTitle: document.querySelector("#confirmTitle"),
+  confirmCopy: document.querySelector("#confirmCopy"),
+  confirmAccept: document.querySelector("#confirmAccept")
 };
 
+const getStorage = () => window.localStorage;
+let persistenceStatus = { writeEnabled: true, message: null };
 let state = loadGame();
 let cameraOffset = 0;
 let manualMode = false;
@@ -78,6 +89,8 @@ let autosaveAccumulator = 0;
 let toastTimer = 0;
 let dragStart = null;
 let victoryShown = false;
+let autosaveBackoff = 0;
+let pendingConfirmation = null;
 
 resizeCanvas();
 renderUi();
@@ -86,9 +99,17 @@ requestAnimationFrame(loop);
 window.addEventListener("resize", resizeCanvas);
 
 ui.buildButton.addEventListener("click", () => {
-  const slot = state.slots[state.selectedSlot];
-  const result = slot?.weapon ? replaceWeapon(state) : buildWeapon(state);
-  reportResult(result, slot?.weapon ? "Орудие заменено" : "Орудие построено");
+  const preview = getReplacementPreview(state);
+  if (preview?.requiresConfirmation) {
+    requestConfirmation({
+      title: "Заменить улучшенное орудие?",
+      copy: `${preview.previousWeaponName} ур.${preview.previousLevel} будет разобран без возврата ресурсов. Построить: ${preview.nextWeaponName}?`,
+      confirmLabel: "Заменить",
+      action: buildOrReplaceSelected
+    });
+    return;
+  }
+  buildOrReplaceSelected();
 });
 
 ui.upgradeButton.addEventListener("click", () => {
@@ -126,18 +147,29 @@ ui.cameraDown.addEventListener("click", () => setCamera(cameraOffset - 0.12));
 ui.cameraHome.addEventListener("click", () => setCamera(0));
 
 ui.saveButton.addEventListener("click", () => {
-  saveGame();
-  showToast("Осада сохранена");
+  const result = saveGame();
+  showToast(result.ok ? "Осада сохранена" : describeStorageFailure(result.reason));
 });
 
 ui.resetButton.addEventListener("click", () => {
-  resetGame();
+  requestConfirmation({
+    title: "Начать новую осаду?",
+    copy: "Текущий прогресс будет удалён. Это действие нельзя отменить.",
+    confirmLabel: "Начать заново",
+    action: resetGame
+  });
 });
 
 ui.victoryReset.addEventListener("click", (event) => {
   event.preventDefault();
   ui.victoryDialog.close();
   resetGame();
+});
+
+ui.confirmDialog.addEventListener("close", () => {
+  const action = ui.confirmDialog.returnValue === "confirm" ? pendingConfirmation : null;
+  pendingConfirmation = null;
+  action?.();
 });
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -185,12 +217,16 @@ function loop(now) {
 
   uiAccumulator += dt;
   autosaveAccumulator += dt;
+  autosaveBackoff = Math.max(0, autosaveBackoff - dt);
   if (uiAccumulator > 0.16) {
     renderUi();
     uiAccumulator = 0;
   }
-  if (autosaveAccumulator > 5) {
-    saveGame();
+  if (autosaveAccumulator > 5 && autosaveBackoff <= 0) {
+    const saveResult = saveGame();
+    if (!saveResult.ok) {
+      autosaveBackoff = 60;
+    }
     autosaveAccumulator = 0;
   }
   if (toastTimer > 0) {
@@ -561,6 +597,32 @@ function drawBlocks(width, height) {
     ctx.strokeRect(-size / 2, -size / 2, size, size);
     ctx.restore();
   }
+  drawBankedBlockPile(width, height);
+}
+
+function drawBankedBlockPile(width, height) {
+  const count = getBankedBlockCount(state);
+  if (count <= 0) {
+    return;
+  }
+  const x = BLOCK_PILE_POSITION.x * width;
+  const y = BLOCK_PILE_POSITION.y * height;
+  const size = Math.max(13, Math.min(width, height) * 0.022);
+  ctx.save();
+  ctx.fillStyle = "#aaa79d";
+  ctx.strokeStyle = "#4f493f";
+  ctx.lineWidth = 2 * devicePixelRatio;
+  for (let index = 0; index < 4; index += 1) {
+    const offsetX = (index - 1.5) * size * 0.55;
+    const offsetY = (index % 2) * -size * 0.5;
+    ctx.fillRect(x + offsetX - size / 2, y + offsetY - size / 2, size, size);
+    ctx.strokeRect(x + offsetX - size / 2, y + offsetY - size / 2, size, size);
+  }
+  ctx.fillStyle = "#fff1c7";
+  ctx.font = `${12 * devicePixelRatio}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.fillText(`Куча ${formatNumber(count)}`, x, y - size * 1.5);
+  ctx.restore();
 }
 
 function drawFloatingTexts(width, height, metrics) {
@@ -740,6 +802,9 @@ function renderHintPanel() {
 }
 
 function getContextHint() {
+  if (persistenceStatus.message) {
+    return persistenceStatus.message;
+  }
   if (state.won) {
     return "Куб пал. Начните новую осаду, чтобы проверить другой билд.";
   }
@@ -750,7 +815,10 @@ function getContextHint() {
     }
     return "Первый камнемёт готов к строительству: выберите свободную площадку.";
   }
-  if (state.stats.collectedBlocks === 0 && state.blocks.some((block) => block.resting)) {
+  if (
+    state.stats.collectedBlocks === 0 &&
+    (state.blocks.some((block) => block.resting) || getBankedBlockCount(state) > 0)
+  ) {
     return "На поле лежат блоки куба: соберите их для первых осколков.";
   }
   const inspectedType = getInspectedWeaponType();
@@ -811,6 +879,13 @@ function handleCanvasTap(event) {
     return;
   }
 
+  if (isBankedBlockPileAt(px, py)) {
+    const result = collectBankedBlocks(state);
+    showToast(`Собрано из кучи: ${formatNumber(result.gained)} осколков`);
+    renderUi();
+    return;
+  }
+
   if (manualMode) {
     const world = screenToCube(px, py, getSceneMetrics(canvas.width, canvas.height));
     const result = manualAimAt(state, world.x, world.y, state.selectedSlot);
@@ -822,6 +897,10 @@ function handleCanvasTap(event) {
 
   tapForOrders(state);
   renderUi();
+}
+
+function isBankedBlockPileAt(px, py) {
+  return getBankedBlockCount(state) > 0 && Math.hypot(px - BLOCK_PILE_POSITION.x, py - BLOCK_PILE_POSITION.y) < 0.075;
 }
 
 function findBlockAt(px, py) {
@@ -877,6 +956,22 @@ function reportResult(result, okMessage) {
   showToast(messages[result.reason] ?? "Действие недоступно");
 }
 
+function buildOrReplaceSelected() {
+  const slot = state.slots[state.selectedSlot];
+  const wasOccupied = Boolean(slot?.weapon);
+  const result = wasOccupied ? replaceWeapon(state) : buildWeapon(state);
+  reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено");
+}
+
+function requestConfirmation({ title, copy, confirmLabel, action }) {
+  pendingConfirmation = action;
+  ui.confirmDialog.returnValue = "";
+  ui.confirmTitle.textContent = title;
+  ui.confirmCopy.textContent = copy;
+  ui.confirmAccept.textContent = confirmLabel;
+  ui.confirmDialog.showModal();
+}
+
 function showToast(text) {
   ui.toast.textContent = text;
   ui.toast.classList.remove("hidden");
@@ -908,30 +1003,71 @@ function statPill(label, value) {
 }
 
 function saveGame() {
-  localStorage.setItem(SAVE_KEY, serializeGameState(state));
+  if (!persistenceStatus.writeEnabled) {
+    return { ok: false, reason: "protected" };
+  }
+  let serialized;
+  try {
+    serialized = serializeGameState(state);
+  } catch {
+    persistenceStatus.message = "Не удалось подготовить сохранение. Игра продолжает работать без автосейва.";
+    return { ok: false, reason: "serialize" };
+  }
+  const result = writeSave(getStorage, SAVE_KEY, serialized);
+  if (result.ok) {
+    persistenceStatus.message = null;
+  } else {
+    persistenceStatus.message = describeStorageFailure(result.reason);
+  }
+  return result;
 }
 
 function loadGame() {
-  const saved = localStorage.getItem(SAVE_KEY);
-  if (!saved) {
+  const saved = readSave(getStorage, SAVE_KEY);
+  if (!saved.ok && saved.reason === "not-found") {
+    return createGameState();
+  }
+  if (!saved.ok) {
+    persistenceStatus.message = describeStorageFailure(saved.reason);
     return createGameState();
   }
   try {
-    return deserializeGameState(saved);
-  } catch {
-    localStorage.removeItem(SAVE_KEY);
+    return deserializeGameState(saved.value);
+  } catch (error) {
+    persistenceStatus.writeEnabled = false;
+    persistenceStatus.message = String(error?.message).includes("newer version")
+      ? "Сейв создан более новой версией игры и сохранён без изменений. Начните новую осаду, чтобы заменить его."
+      : "Сейв повреждён и сохранён без изменений. Начните новую осаду, чтобы заменить его.";
     return createGameState();
   }
 }
 
 function resetGame() {
-  localStorage.removeItem(SAVE_KEY);
+  const removed = removeSave(getStorage, SAVE_KEY);
+  persistenceStatus = {
+    writeEnabled: removed.ok,
+    message: removed.ok ? null : describeStorageFailure(removed.reason)
+  };
   state = createGameState();
   cameraOffset = 0;
   manualMode = false;
   victoryShown = false;
+  autosaveBackoff = removed.ok ? 0 : 60;
+  if (removed.ok) {
+    saveGame();
+  }
   renderUi();
   showToast("Новая осада началась");
+}
+
+function describeStorageFailure(reason) {
+  const messages = {
+    quota: "Хранилище заполнено. Игра продолжает работать, но прогресс пока не сохраняется.",
+    unavailable: "Хранилище браузера недоступно. Игра продолжает работать без сохранения.",
+    protected: "Старый сейв защищён от перезаписи. Начните новую осаду, чтобы заменить его.",
+    serialize: "Не удалось подготовить сохранение."
+  };
+  return messages[reason] ?? "Не удалось сохранить прогресс.";
 }
 
 function resizeCanvas() {

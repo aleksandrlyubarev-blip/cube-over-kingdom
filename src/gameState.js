@@ -550,6 +550,21 @@ export function replaceWeapon(state, slotIndex = state.selectedSlot, typeId = st
   return { ok: true, weapon };
 }
 
+export function getReplacementPreview(state, slotIndex = state.selectedSlot, typeId = state.selectedWeaponType) {
+  const weapon = state.slots[slotIndex]?.weapon;
+  if (!weapon || weapon.typeId === typeId) {
+    return null;
+  }
+  const previousType = getWeaponType(weapon.typeId);
+  const nextType = getWeaponType(typeId);
+  return {
+    previousWeaponName: previousType.name,
+    previousLevel: weapon.level,
+    nextWeaponName: nextType.name,
+    requiresConfirmation: weapon.level >= 2
+  };
+}
+
 export function upgradeWeapon(state, slotIndex) {
   const slot = state.slots[slotIndex];
   if (!slot?.weapon || slot.weapon.level >= 3) {

@@ -15,6 +15,7 @@ import {
   getCurrentLayerProgress,
   getSiegeGateStatus,
   getLayerVulnerabilitySummary,
+  getReplacementPreview,
   getWeaponLayerReachStatus,
   serializeGameState,
   buildWeapon,
@@ -396,6 +397,26 @@ test("occupied slots can be replaced with a newly unlocked tier", () => {
   assert.equal(result.ok, true);
   assert.equal(state.slots[0].weapon.typeId, "trebuchet");
   assert.equal(state.stats.replacedWeapons, 1);
+});
+
+test("replacement preview only requires confirmation for upgraded weapons", () => {
+  const state = createGameState();
+  state.resources.orders = 5000;
+  state.resources.shards = 5000;
+  buildWeapon(state, 0, "stoneThrower");
+
+  const levelOne = getReplacementPreview(state, 0, "ballista");
+  assert.equal(levelOne.requiresConfirmation, false);
+  assert.equal(levelOne.previousWeaponName, "Камнемёт");
+  assert.equal(levelOne.nextWeaponName, "Баллиста");
+
+  upgradeWeapon(state, 0);
+  const upgraded = getReplacementPreview(state, 0, "ballista");
+  assert.equal(upgraded.requiresConfirmation, true);
+  assert.equal(upgraded.previousLevel, 2);
+
+  assert.equal(getReplacementPreview(state, 0, "stoneThrower"), null);
+  assert.equal(getReplacementPreview(state, 1, "ballista"), null);
 });
 
 test("critical weak hit uses weapon crit multiplier without a second quality crit multiplier", () => {

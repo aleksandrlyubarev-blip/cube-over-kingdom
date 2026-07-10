@@ -10,11 +10,13 @@ import {
   canAfford,
   canBuyUpgradeNode,
   canWeaponDamageLayer,
+  collectBankedBlocks,
   collectBlock,
   createGameState,
   estimateWeaponDps,
   formatNumber,
   getLayerDamageRule,
+  getBankedBlockCount,
   getRemainingCubeHp,
   getUnlockedWeaponTypes,
   getWeaponCost,
@@ -685,6 +687,7 @@ function collectBlocksForProfile(state, fraction) {
   for (const block of state.blocks.slice(0, count)) {
     collectBlock(state, block.id);
   }
+  collectBankedBlocks(state, Math.ceil(getBankedBlockCount(state) * fraction));
 }
 
 function createRng(seed) {

@@ -111,6 +111,20 @@
       </form>
     </dialog>
 
+    <dialog id="confirmDialog" class="game-dialog confirm-dialog">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="confirmTitle">Подтвердите действие</h2>
+          <button class="icon-button" value="cancel" type="submit" title="Закрыть">×</button>
+        </header>
+        <p id="confirmCopy" class="confirm-copy"></p>
+        <div class="confirm-actions">
+          <button class="plain-button" value="cancel" type="submit">Отмена</button>
+          <button id="confirmAccept" class="primary-button" value="confirm" type="submit">Подтвердить</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>
