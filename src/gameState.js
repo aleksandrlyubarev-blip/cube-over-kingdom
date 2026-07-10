@@ -377,6 +377,18 @@ export function getReachableZonesForWeapon(type, layerIndex) {
   return type.zones.filter((zone) => zone !== "weak" && rule.zones.includes(zone));
 }
 
+export function getWeaponLayerReachStatus(type, layerIndex) {
+  const normalZones = getReachableZonesForWeapon(type, layerIndex);
+  const canHitWeakSpot = canWeaponDamageLayer(type, layerIndex, { hitWeakSpot: true });
+  const kind = normalZones.length > 0 ? "normal" : canHitWeakSpot ? "weak-only" : "blocked";
+
+  return {
+    kind,
+    normalZones,
+    canHitWeakSpot
+  };
+}
+
 export function getWeaponCost(type, level = 1) {
   const growth = Math.pow(1.72, Math.max(0, level - 1));
   return {

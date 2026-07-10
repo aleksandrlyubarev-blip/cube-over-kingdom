@@ -10,6 +10,7 @@ import {
   getCurrentLayerProgress,
   getSiegeGateStatus,
   getLayerVulnerabilitySummary,
+  getWeaponLayerReachStatus,
   serializeGameState,
   buildWeapon,
   buyUpgradeNode,
@@ -413,6 +414,26 @@ test("layer vulnerability summary includes zone names and siege-only requirement
   assert.deepEqual(heart.zoneNames, ["Глубокая зона", "Слабые места"]);
   assert.deepEqual(heart.requiredWeaponNames, ["Осадная пушка"]);
   assert.equal(heart.text, "Глубокая зона, Слабые места · только Осадная пушка");
+});
+
+test("weapon reach status distinguishes normal, weak-only, and blocked damage", () => {
+  const trebuchet = getWeaponLayerReachStatus(getWeaponType("trebuchet"), 1);
+  assert.equal(trebuchet.kind, "normal");
+  assert.deepEqual(trebuchet.normalZones, ["middle"]);
+  assert.equal(trebuchet.canHitWeakSpot, false);
+
+  const ballista = getWeaponLayerReachStatus(getWeaponType("ballista"), 1);
+  assert.equal(ballista.kind, "weak-only");
+  assert.deepEqual(ballista.normalZones, []);
+  assert.equal(ballista.canHitWeakSpot, true);
+
+  const stoneThrower = getWeaponLayerReachStatus(getWeaponType("stoneThrower"), 1);
+  assert.equal(stoneThrower.kind, "blocked");
+  assert.deepEqual(stoneThrower.normalZones, []);
+  assert.equal(stoneThrower.canHitWeakSpot, false);
+
+  const heartBallista = getWeaponLayerReachStatus(getWeaponType("ballista"), 4);
+  assert.equal(heartBallista.kind, "blocked");
 });
 
 test("v1 saves migrate proportional layer progress and retroactive layer rewards", () => {

@@ -5,7 +5,6 @@ import {
   ZONES,
   buildWeapon,
   buyUpgradeNode,
-  canWeaponDamageLayer,
   canBuyUpgradeNode,
   collectBlock,
   createGameState,
@@ -15,10 +14,10 @@ import {
   getCurrentLayerProgress,
   getLayerVulnerabilitySummary,
   getRemainingCubeHp,
-  getReachableZonesForWeapon,
   getSiegeGateStatus,
   getUnlockedWeaponTypes,
   getWeaponCost,
+  getWeaponLayerReachStatus,
   getWeaponType,
   manualAimAt,
   repairWeapon,
@@ -404,7 +403,7 @@ function drawLayerVulnerabilityBands(metrics) {
 }
 
 function drawZoneBands(metrics) {
-  const selected = getWeaponType(state.selectedWeaponType);
+  const selected = getInspectedWeaponType();
   const { cubeLeft, cubeRight, cubeBottom, cubeWorldHeight } = metrics;
   const cubeWidth = cubeRight - cubeLeft;
   for (const zoneId of selected.zones) {
@@ -710,25 +709,25 @@ function renderActionPanel() {
 function renderZoneLine() {
   if (state.won || state.cube.layerIndex >= CUBE_LAYERS.length) {
     ui.zoneLine.textContent = "Куб разрушен";
-    ui.zoneLine.classList.remove("warning");
+    ui.zoneLine.classList.remove("warning", "weak-only");
     return;
   }
   const slotWeapon = state.slots[state.selectedSlot]?.weapon;
-  const type = slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
+  const type = getInspectedWeaponType();
   const source = slotWeapon ? "В слоте" : "К постройке";
   const layerIndex = state.cube.layerIndex;
   const vulnerability = getLayerVulnerabilitySummary(layerIndex);
-  const reaches =
-    canWeaponDamageLayer(type, layerIndex) ||
-    canWeaponDamageLayer(type, layerIndex, { hitWeakSpot: true });
+  const reach = getWeaponLayerReachStatus(type, layerIndex);
   const weaponZones = describeWeaponZones(type);
-  const overlap = getReachableZonesForWeapon(type, layerIndex);
   const layerText = `Слой уязвим: ${vulnerability.text}`;
 
-  ui.zoneLine.classList.toggle("warning", !reaches);
-  if (reaches) {
-    const overlapText = overlap.length > 0 ? ` · достаёт: ${overlap.map(formatZoneName).join(", ")}` : "";
+  ui.zoneLine.classList.toggle("warning", reach.kind === "blocked");
+  ui.zoneLine.classList.toggle("weak-only", reach.kind === "weak-only");
+  if (reach.kind === "normal") {
+    const overlapText = ` · достаёт: ${reach.normalZones.map(formatZoneName).join(", ")}`;
     ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
+  } else if (reach.kind === "weak-only") {
+    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} наносит урон только по слабому месту; обычные выстрелы вне зоны.`;
   } else {
     ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} не достаёт до слоя.`;
   }
@@ -754,12 +753,20 @@ function getContextHint() {
   if (state.stats.collectedBlocks === 0 && state.blocks.some((block) => block.resting)) {
     return "На поле лежат блоки куба: соберите их для первых осколков.";
   }
-  const slotWeapon = state.slots[state.selectedSlot]?.weapon;
-  const inspectedType = slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
-  if (state.stats.blockedShots > 0 && !canWeaponDamageLayer(inspectedType, state.cube.layerIndex)) {
+  const inspectedType = getInspectedWeaponType();
+  const reach = getWeaponLayerReachStatus(inspectedType, state.cube.layerIndex);
+  if (state.stats.blockedShots > 0 && reach.kind === "weak-only") {
+    return `${inspectedType.name} пробивает слой только через слабое место. Для постоянного урона смените зону орудия.`;
+  }
+  if (state.stats.blockedShots > 0 && reach.kind === "blocked") {
     return `Если урон остановился: текущий слой уязвим (${getLayerVulnerabilitySummary(state.cube.layerIndex).text}).`;
   }
   return null;
+}
+
+function getInspectedWeaponType() {
+  const slotWeapon = state.slots[state.selectedSlot]?.weapon;
+  return slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
 }
 
 function renderLabyrinth() {
