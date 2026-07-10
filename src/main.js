@@ -756,7 +756,8 @@ function getContextHint() {
   const inspectedType = getInspectedWeaponType();
   const reach = getWeaponLayerReachStatus(inspectedType, state.cube.layerIndex);
   if (state.stats.blockedShots > 0 && reach.kind === "weak-only") {
-    return `${inspectedType.name} пробивает слой только через слабое место. Для постоянного урона смените зону орудия.`;
+    const requiredZones = getLayerVulnerabilitySummary(state.cube.layerIndex).zoneNames.join(" или ").toLowerCase();
+    return `${inspectedType.name} пробивает слой только через слабое место. Для постоянного урона установите орудие, которое достаёт до зоны: ${requiredZones}.`;
   }
   if (state.stats.blockedShots > 0 && reach.kind === "blocked") {
     return `Если урон остановился: текущий слой уязвим (${getLayerVulnerabilitySummary(state.cube.layerIndex).text}).`;

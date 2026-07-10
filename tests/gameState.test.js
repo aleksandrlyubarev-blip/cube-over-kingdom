@@ -517,6 +517,17 @@ test("weapon reach status distinguishes normal, weak-only, and blocked damage", 
 
   const heartBallista = getWeaponLayerReachStatus(getWeaponType("ballista"), 4);
   assert.equal(heartBallista.kind, "blocked");
+
+  const heartBombard = getWeaponLayerReachStatus(getWeaponType("bombard"), 4);
+  assert.equal(heartBombard.kind, "blocked");
+
+  const heartCannon = getWeaponLayerReachStatus(getWeaponType("cannon"), 4);
+  assert.equal(heartCannon.kind, "blocked");
+
+  const heartSiegeCannon = getWeaponLayerReachStatus(getWeaponType("siegeCannon"), 4);
+  assert.equal(heartSiegeCannon.kind, "normal");
+  assert.deepEqual(heartSiegeCannon.normalZones, ["deep"]);
+  assert.equal(heartSiegeCannon.canHitWeakSpot, true);
 });
 
 test("v1 saves migrate proportional layer progress and retroactive layer rewards", () => {

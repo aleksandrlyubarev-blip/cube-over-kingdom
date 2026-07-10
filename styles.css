@@ -52,7 +52,7 @@ button:disabled {
 
 .game-shell {
   display: grid;
-  grid-template-rows: 64px minmax(280px, 1fr) 300px;
+  grid-template-rows: 64px minmax(280px, 1fr) 352px;
   width: 100%;
   height: 100dvh;
   min-height: 620px;
@@ -449,10 +449,13 @@ h1 {
 }
 
 .actions-card {
-  display: grid;
-  grid-template-rows: 38px auto auto auto auto;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
+}
+
+.actions-card > * {
+  flex-shrink: 0;
 }
 
 .action-grid {
@@ -644,7 +647,7 @@ h1 {
 
 @media (max-width: 980px) {
   .game-shell {
-    grid-template-rows: 64px minmax(260px, 1fr) 300px;
+    grid-template-rows: 64px minmax(260px, 1fr) 352px;
   }
 
   .topbar {
@@ -689,7 +692,7 @@ h1 {
   }
 }
 
-@media (max-height: 640px) {
+@media (max-height: 700px) {
   html,
   body {
     height: auto;
