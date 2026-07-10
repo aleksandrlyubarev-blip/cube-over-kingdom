@@ -7,6 +7,7 @@ import {
   LAYER_REWARDS,
   LEGACY_V1_LAYER_HP,
   MAX_VISUAL_BLOCKS,
+  OFFLINE_PROGRESS_CAP_SECONDS,
   SAVE_VERSION,
   addBlocksToBank,
   collectBankedBlocks,
@@ -18,6 +19,7 @@ import {
   getReplacementPreview,
   getWeaponLayerReachStatus,
   serializeGameState,
+  simulateOfflineProgress,
   buildWeapon,
   buyUpgradeNode,
   canBuyUpgradeNode,
@@ -669,6 +671,153 @@ test("current-version saves round-trip without duplicate rewards", () => {
   assert.equal(restored.version, SAVE_VERSION);
   assert.equal(restored.resources.orders, 777);
   assert.deepEqual(restored.cube.layerHp, state.cube.layerHp);
+});
+
+test("offline progress caps elapsed time and never auto-purchases", () => {
+  const state = createGameState();
+  state.modifiers.orderRate = 2;
+  const ordersBefore = state.resources.orders;
+
+  const recap = simulateOfflineProgress(state, 10 * 60 * 60);
+
+  assert.equal(recap.capped, true);
+  assert.equal(recap.simulatedSeconds, OFFLINE_PROGRESS_CAP_SECONDS);
+  assert.equal(state.time, OFFLINE_PROGRESS_CAP_SECONDS);
+  assert.equal(state.resources.orders, ordersBefore + OFFLINE_PROGRESS_CAP_SECONDS * 2);
+  assert.equal(recap.ordersGained, OFFLINE_PROGRESS_CAP_SECONDS * 2);
+  assert.equal(state.stats.builtWeapons, 0);
+  assert.equal(state.slots.some((slot) => slot.weapon), false);
+});
+
+test("zero offline elapsed is a true no-op", () => {
+  const state = createGameState();
+  state.blocks = [{ id: 99, value: 3 }];
+  const before = serializeGameState(state);
+
+  const recap = simulateOfflineProgress(state, 0);
+
+  assert.equal(serializeGameState(state), before);
+  assert.equal(recap.simulatedSeconds, 0);
+  assert.equal(recap.damageDealt, 0);
+});
+
+test("offline combat respects the siege-only heart gate", () => {
+  const blocked = createGameState();
+  blocked.cube.layerIndex = 4;
+  blocked.cube.layerHp = [0, 0, 0, 0, CUBE_LAYERS[4].hp];
+  blocked.resources.orders = 100000;
+  blocked.resources.shards = 100000;
+  buildWeapon(blocked, 0, "bombard");
+  blocked.slots[0].weapon.cooldown = 0;
+  const blockedHp = blocked.cube.layerHp[4];
+
+  const blockedRecap = simulateOfflineProgress(blocked, 60);
+
+  assert.equal(blocked.cube.layerHp[4], blockedHp);
+  assert.equal(blockedRecap.damageDealt, 0);
+  assert.ok(blocked.stats.blockedShots > 0);
+
+  const siege = createGameState();
+  siege.cube.layerIndex = 4;
+  siege.cube.layerHp = [0, 0, 0, 0, CUBE_LAYERS[4].hp];
+  siege.resources.orders = 100000;
+  siege.resources.shards = 100000;
+  buildWeapon(siege, 0, "siegeCannon");
+  siege.slots[0].weapon.cooldown = 0;
+
+  const siegeRecap = simulateOfflineProgress(siege, 60);
+
+  assert.ok(siege.cube.layerHp[4] < CUBE_LAYERS[4].hp);
+  assert.ok(siegeRecap.damageDealt > 0);
+});
+
+test("offline drops stay banked unless auto collect is unlocked", () => {
+  const unattended = createGameState();
+  unattended.resources.orders = 1000;
+  buildWeapon(unattended, 0, "stoneThrower");
+  unattended.slots[0].weapon.cooldown = 0;
+
+  const unattendedRecap = simulateOfflineProgress(unattended, 120);
+
+  assert.equal(unattended.blocks.length, 0);
+  assert.ok(getBankedBlockCount(unattended) > 0);
+  assert.equal(unattended.resources.shards, 0);
+  assert.equal(unattendedRecap.blocksCollected, 0);
+
+  const automated = createGameState();
+  automated.resources.orders = 1000;
+  automated.modifiers.autoCollect = true;
+  buildWeapon(automated, 0, "stoneThrower");
+  automated.slots[0].weapon.cooldown = 0;
+
+  const automatedRecap = simulateOfflineProgress(automated, 120);
+
+  assert.ok(automated.resources.shards > 0);
+  assert.ok(automatedRecap.blocksCollected > 0);
+});
+
+test("offline layer destruction grants rewards and the new salary rate", () => {
+  const state = createGameState();
+  state.resources.orders = 1000;
+  buildWeapon(state, 0, "stoneThrower");
+  state.slots[0].weapon.cooldown = 0;
+  state.cube.layerHp[0] = 1;
+
+  const recap = simulateOfflineProgress(state, 10);
+
+  assert.equal(state.cube.layerIndex, 1);
+  assert.equal(state.stats.layersDestroyed, 1);
+  assert.equal(state.modifiers.orderRate, LAYER_ORDER_RATE_BONUS[0]);
+  assert.equal(recap.layersDestroyed, 1);
+  assert.ok(recap.ordersGained >= LAYER_REWARDS[0].orders);
+});
+
+test("offline repair modifier preserves condition without spending resources", () => {
+  const neglected = createGameState();
+  neglected.resources.orders = 1000;
+  buildWeapon(neglected, 0, "stoneThrower");
+  neglected.slots[0].weapon.cooldown = 0;
+
+  const maintained = deserializeGameState(serializeGameState(neglected));
+  maintained.modifiers.autoRepair = true;
+
+  simulateOfflineProgress(neglected, 600);
+  simulateOfflineProgress(maintained, 600);
+
+  assert.ok(neglected.slots[0].weapon.condition <= 0.25);
+  assert.ok(maintained.slots[0].weapon.condition > neglected.slots[0].weapon.condition);
+  assert.equal(maintained.resources.orders, neglected.resources.orders);
+  assert.equal(maintained.resources.shards, neglected.resources.shards);
+});
+
+test("offline simulation is deterministic from the persisted RNG state", () => {
+  const left = createGameState();
+  left.resources.orders = 1000;
+  buildWeapon(left, 0, "stoneThrower");
+  left.slots[0].weapon.cooldown = 0;
+  const right = deserializeGameState(serializeGameState(left));
+
+  const leftRecap = simulateOfflineProgress(left, 300);
+  const rightRecap = simulateOfflineProgress(right, 300);
+
+  assert.deepEqual(leftRecap, rightRecap);
+  assert.deepEqual(left.cube.layerHp, right.cube.layerHp);
+  assert.deepEqual(left.stats, right.stats);
+  assert.equal(left.offlineRngState, right.offlineRngState);
+  assert.equal(left.slots[0].weapon.condition, right.slots[0].weapon.condition);
+});
+
+test("v3 saves gain offline fields without retroactive elapsed time", () => {
+  const legacy = createGameState();
+  legacy.version = 3;
+  delete legacy.savedAtMs;
+  delete legacy.offlineRngState;
+
+  const state = deserializeGameState(JSON.stringify(legacy));
+
+  assert.equal(SAVE_VERSION, 4);
+  assert.equal(state.savedAtMs, null);
+  assert.ok(Number.isInteger(state.offlineRngState));
 });
 
 test("invalid saves are rejected", () => {

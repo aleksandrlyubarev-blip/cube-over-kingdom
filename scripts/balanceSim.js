@@ -27,6 +27,7 @@ import {
   manualAimAt,
   repairWeapon,
   replaceWeapon,
+  simulateOfflineProgress,
   tapForOrders,
   tickGame,
   upgradeWeapon
@@ -106,6 +107,7 @@ export const DIAGNOSTIC_PROFILES = [
     seed: 4404,
     sessionCount: 3,
     sessionSeconds: 30 * 60,
+    offlineBetweenSessions: 60 * 60,
     maxSeconds: 3 * 30 * 60,
     tapRate: 0.08,
     activeTapUntil: 3 * 30 * 60,
@@ -238,6 +240,10 @@ export function simulateProfile(profile, layerHpOverride = null) {
   let currentLayer = state.cube.layerIndex;
   let currentLayerTimer = startLayerTimer(state, currentLayer, 0);
   let manualPending = false;
+  let activeElapsedSeconds = 0;
+  let offlineElapsedSeconds = 0;
+  let currentSessionSeconds = 0;
+  let completedSessionGaps = 0;
   const manual = {
     scheduled: 0,
     hits: 0,
@@ -264,13 +270,17 @@ export function simulateProfile(profile, layerHpOverride = null) {
   };
 
   return withRandom(rng, () => {
-    while (!state.won && state.time < profile.maxSeconds) {
-      const dt = 1;
-      if (state.time < profile.activeTapUntil) {
+    while (!state.won && activeElapsedSeconds < profile.maxSeconds) {
+      const sessionRemaining = profile.sessionSeconds
+        ? Math.max(0, profile.sessionSeconds - currentSessionSeconds)
+        : Number.POSITIVE_INFINITY;
+      const dt = Math.min(1, profile.maxSeconds - activeElapsedSeconds, sessionRemaining);
+      const activeStepStartedAt = state.time;
+      if (activeElapsedSeconds < profile.activeTapUntil) {
         tapForOrders(state, profile.tapRate * dt);
       }
 
-      if (state.time >= nextManual) {
+      if (activeElapsedSeconds >= nextManual) {
         manual.scheduled += 1;
         if (getEligibleManualSlots(state).length > 0) {
           manualPending = true;
@@ -314,20 +324,43 @@ export function simulateProfile(profile, layerHpOverride = null) {
       }
       recordLayerTransitions();
 
-      if (state.time >= nextCollect) {
+      const activeStepSeconds = Math.max(0, state.time - activeStepStartedAt);
+      activeElapsedSeconds += activeStepSeconds;
+      currentSessionSeconds += activeStepSeconds;
+
+      if (activeElapsedSeconds >= nextCollect) {
         collectBlocksForProfile(state, profile.collectFraction);
         nextCollect += profile.collectEvery;
       }
 
-      if (state.time >= nextSpend) {
+      if (activeElapsedSeconds >= nextSpend) {
         spendForProfile(state, profile, events);
         openCombatIfReady(currentLayerTimer, state);
         nextSpend += profile.spendEvery;
       }
 
-      if (state.time >= nextSample) {
+      if (activeElapsedSeconds >= nextSample) {
         samples.push(telemetry.sample(profile.id));
         nextSample += profile.sampleEvery;
+      }
+
+      const hasAnotherSession =
+        profile.sessionCount && completedSessionGaps < profile.sessionCount - 1;
+      if (
+        !state.won &&
+        hasAnotherSession &&
+        currentSessionSeconds >= profile.sessionSeconds - 1e-9
+      ) {
+        const offline = simulateOfflineProgress(state, profile.offlineBetweenSessions ?? 0);
+        offlineElapsedSeconds += offline.simulatedSeconds;
+        completedSessionGaps += 1;
+        currentSessionSeconds = 0;
+        events.push(
+          `[${formatDuration(state.time)}] offline catch-up ${formatDuration(offline.simulatedSeconds)}, damage ${formatNumber(
+            offline.damageDealt
+          )}`
+        );
+        recordLayerTransitions();
       }
     }
 
@@ -343,6 +376,8 @@ export function simulateProfile(profile, layerHpOverride = null) {
       name: profile.name,
       completed: state.won,
       elapsedSeconds: Math.round(state.time),
+      activeElapsedSeconds: Math.round(activeElapsedSeconds),
+      offlineElapsedSeconds: Math.round(offlineElapsedSeconds),
       combatElapsedSeconds: Math.round(combatElapsedSeconds),
       acquisitionWaitSeconds: Math.round(acquisitionWaitSeconds),
       elapsed: formatDuration(state.time),
@@ -1016,7 +1051,9 @@ function printDiagnosticProfiles(profiles) {
         profile.remainingHp
       )} HP, condition floor ${Math.round(
         Math.min(...profile.weapons.map((weapon) => weapon.condition), 1) * 100
-      )}% (active-time baseline)`
+      )}% (${formatDuration(profile.activeElapsedSeconds)} active + ${formatDuration(
+        profile.offlineElapsedSeconds
+      )} catch-up)`
     );
   }
 }
@@ -1296,7 +1333,9 @@ function renderMarkdown(data) {
     lines.push(
       `### ${profile.name}`,
       "",
-      `Result: ${profile.completed ? "win" : "not finished"} after ${profile.elapsed} active time; remaining HP: ${
+      `Result: ${profile.completed ? "win" : "not finished"} after ${profile.elapsed} (${formatDuration(
+        profile.activeElapsedSeconds
+      )} active + ${formatDuration(profile.offlineElapsedSeconds)} catch-up); remaining HP: ${
         profile.remainingHp
       }; collected shards: ${profile.stats.shardsCollected}.`,
       ""

@@ -1,6 +1,6 @@
 # Balance Snapshot
 
-Generated: 2026-07-10T16:01:09.430Z
+Generated: 2026-07-10T16:14:25.707Z
 
 ## Theoretical 4-Slot Pressure
 
@@ -154,5 +154,5 @@ Result: win in 1h 36m; combat: 1h 36m; acquisition: 41s; remaining HP: 0.
 
 ### Запущенный лагерь: 3x30 мин
 
-Result: not finished after 1h 30m active time; remaining HP: 9109665; collected shards: 15599.
+Result: not finished after 3h 30m (1h 30m active + 2h 0m catch-up); remaining HP: 8322100; collected shards: 35802.
 

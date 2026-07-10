@@ -108,8 +108,11 @@ test("neglectful diagnostic is bounded to three active half-hour sessions", () =
 
   assert.equal(diagnostic.sessionCount, 3);
   assert.equal(diagnostic.sessionSeconds, 30 * 60);
+  assert.equal(diagnostic.offlineBetweenSessions, 60 * 60);
   assert.equal(diagnostic.maxSeconds, 3 * 30 * 60);
   assert.equal(diagnostic.repairThreshold, null);
   assert.equal(result.completed, false);
-  assert.equal(result.elapsedSeconds, 3 * 30 * 60);
+  assert.equal(result.activeElapsedSeconds, 3 * 30 * 60);
+  assert.equal(result.offlineElapsedSeconds, 2 * 60 * 60);
+  assert.equal(result.elapsedSeconds, 3 * 30 * 60 + 2 * 60 * 60);
 });

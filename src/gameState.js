@@ -8,9 +8,11 @@ export const CUBE_LAYERS = [
   { id: "heart", name: "Сердце куба", hp: 4600000, color: "#5d3d58" }
 ];
 
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 export const MAX_VISUAL_BLOCKS = 96;
 export const AUTO_COLLECT_RATE = 8;
+export const OFFLINE_PROGRESS_CAP_SECONDS = 8 * 60 * 60;
+const DEFAULT_OFFLINE_RNG_STATE = 0x6d2b79f5;
 
 // HP слоёв, с которыми жили сейвы v1 (до версионирования). Нужны миграции,
 // чтобы пересчитать прогресс слоя пропорционально при изменении баланса.
@@ -244,6 +246,8 @@ export function createGameState() {
   const layerHp = CUBE_LAYERS.map((layer) => layer.hp);
   return {
     version: SAVE_VERSION,
+    savedAtMs: null,
+    offlineRngState: DEFAULT_OFFLINE_RNG_STATE,
     time: 0,
     won: false,
     resources: {
@@ -694,34 +698,12 @@ export function tickGame(state, dt, random = Math.random) {
     if (!slot.weapon) {
       continue;
     }
-    const type = getWeaponType(slot.weapon.typeId);
     if (state.modifiers.autoRepair && slot.weapon.condition < 1) {
       slot.weapon.condition = Math.min(1, slot.weapon.condition + dt * 0.012);
     }
     slot.weapon.cooldown -= dt;
     if (slot.weapon.cooldown <= 0) {
-      const quality = rollQuality(state, random);
-      const canHitWeakSpot = canWeaponDamageLayer(type, state.cube.layerIndex, { hitWeakSpot: true });
-      const hitWeakSpot = canHitWeakSpot && random() < 0.03 + state.modifiers.qualityBonus * 0.08;
-      const target = pickTargetForWeapon(state, type, hitWeakSpot, random);
-      if (!target) {
-        state.stats.blockedShots += 1;
-        slot.weapon.cooldown += type.reload;
-        slot.weapon.condition = Math.max(0.2, slot.weapon.condition - 0.004);
-        addFloatingText(state, "вне зоны", 0.5, 0.38, "#d2c0a0");
-        continue;
-      }
-      const damage = resolveWeaponDamage(state, slot.weapon, quality, hitWeakSpot);
-      applyDamage(state, damage, target.x, target.y, {
-        quality,
-        hitWeakSpot,
-        weaponType: type
-      });
-      addProjectile(state, slotIndex, target.x, target.y, type, quality, hitWeakSpot);
-      state.stats.shots += 1;
-      slot.weapon.shots += 1;
-      slot.weapon.cooldown += type.reload * Math.max(0.62, 1 - slot.weapon.level * 0.08);
-      slot.weapon.condition = Math.max(0.2, slot.weapon.condition - (quality.id === "critical" ? 0.026 : 0.01));
+      resolveAutomaticWeaponShot(state, slot, slotIndex, random);
     }
   }
 
@@ -755,6 +737,194 @@ export function tickGame(state, dt, random = Math.random) {
   }
 
   ageEphemera(state, dt);
+}
+
+function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}) {
+  if (state.won || !slot.weapon) {
+    return { ok: false, reason: "won" };
+  }
+  const type = getWeaponType(slot.weapon.typeId);
+  const quality = rollQuality(state, random);
+  const canHitWeakSpot = canWeaponDamageLayer(type, state.cube.layerIndex, { hitWeakSpot: true });
+  const hitWeakSpot = canHitWeakSpot && random() < 0.03 + state.modifiers.qualityBonus * 0.08;
+  const target = pickTargetForWeapon(state, type, hitWeakSpot, random);
+  if (!target) {
+    state.stats.blockedShots += 1;
+    slot.weapon.cooldown += type.reload;
+    slot.weapon.condition = Math.max(0.2, slot.weapon.condition - 0.004);
+    if (!options.silent) {
+      addFloatingText(state, "вне зоны", 0.5, 0.38, "#d2c0a0");
+    }
+    return { ok: false, reason: "range" };
+  }
+
+  const damage = resolveWeaponDamage(state, slot.weapon, quality, hitWeakSpot);
+  applyDamage(state, damage, target.x, target.y, {
+    quality,
+    hitWeakSpot,
+    weaponType: type,
+    silent: options.silent,
+    bankBlocks: options.bankBlocks,
+    random
+  });
+  if (!options.silent) {
+    addProjectile(state, slotIndex, target.x, target.y, type, quality, hitWeakSpot);
+  }
+  state.stats.shots += 1;
+  slot.weapon.shots += 1;
+  slot.weapon.cooldown += type.reload * Math.max(0.62, 1 - slot.weapon.level * 0.08);
+  slot.weapon.condition = Math.max(0.2, slot.weapon.condition - (quality.id === "critical" ? 0.026 : 0.01));
+  return { ok: true, damage, hitWeakSpot };
+}
+
+export function simulateOfflineProgress(state, requestedSeconds) {
+  const requested = Number.isFinite(requestedSeconds) ? Math.max(0, requestedSeconds) : 0;
+  const allowedSeconds = Math.min(requested, OFFLINE_PROGRESS_CAP_SECONDS);
+  const before = {
+    damage: state.stats.damage,
+    layersDestroyed: state.stats.layersDestroyed,
+    orders: state.resources.orders,
+    shards: state.resources.shards,
+    collectedBlocks: state.stats.collectedBlocks,
+    spawnedBlocks: state.stats.spawnedBlocks,
+    layerIndex: state.cube.layerIndex
+  };
+  if (allowedSeconds <= 0) {
+    return buildOfflineRecap(state, before, requested, allowedSeconds, 0);
+  }
+  const random = createOfflineRandom(state);
+  settleVisualBlocksToBank(state);
+
+  let remainingSeconds = allowedSeconds;
+  let simulatedSeconds = 0;
+  while (remainingSeconds > 1e-9 && !state.won) {
+    const activeSlots = state.slots.filter(
+      (slot, index) => index < state.unlockedSlots && slot.weapon
+    );
+    if (activeSlots.length === 0) {
+      advanceOfflineTime(state, remainingSeconds, random);
+      simulatedSeconds += remainingSeconds;
+      remainingSeconds = 0;
+      break;
+    }
+
+    for (const slot of activeSlots) {
+      if (!Number.isFinite(slot.weapon.cooldown)) {
+        slot.weapon.cooldown = 0;
+      }
+    }
+    const nextReadySeconds = Math.min(
+      ...activeSlots.map((slot) => Math.max(0, slot.weapon.cooldown))
+    );
+    const stepSeconds = Math.min(remainingSeconds, nextReadySeconds);
+    if (stepSeconds > 1e-9) {
+      advanceOfflineTime(state, stepSeconds, random);
+      simulatedSeconds += stepSeconds;
+      remainingSeconds -= stepSeconds;
+    }
+
+    const readySlots = activeSlots.filter((slot) => slot.weapon.cooldown <= 1e-9);
+    if (readySlots.length === 0) {
+      if (remainingSeconds <= 1e-9) {
+        break;
+      }
+      const fallbackStep = Math.min(remainingSeconds, 0.001);
+      advanceOfflineTime(state, fallbackStep, random);
+      simulatedSeconds += fallbackStep;
+      remainingSeconds -= fallbackStep;
+      continue;
+    }
+
+    for (const slot of readySlots) {
+      if (state.won) {
+        break;
+      }
+      resolveAutomaticWeaponShot(state, slot, slot.id, random, {
+        silent: true,
+        bankBlocks: true
+      });
+    }
+  }
+
+  ageEphemera(state, simulatedSeconds);
+  return buildOfflineRecap(state, before, requested, allowedSeconds, simulatedSeconds);
+}
+
+function buildOfflineRecap(state, before, requestedSeconds, allowedSeconds, simulatedSeconds) {
+  const layersDestroyed = state.stats.layersDestroyed - before.layersDestroyed;
+  return {
+    requestedSeconds,
+    simulatedSeconds,
+    capped: requestedSeconds > allowedSeconds,
+    damageDealt: Math.max(0, state.stats.damage - before.damage),
+    layersDestroyed,
+    destroyedLayerNames: CUBE_LAYERS.slice(
+      before.layerIndex,
+      Math.min(CUBE_LAYERS.length, before.layerIndex + layersDestroyed)
+    ).map((layer) => layer.name),
+    ordersGained: state.resources.orders - before.orders,
+    shardsGained: state.resources.shards - before.shards,
+    blocksCollected: state.stats.collectedBlocks - before.collectedBlocks,
+    blocksSpawned: state.stats.spawnedBlocks - before.spawnedBlocks,
+    bankedBlocks: getBankedBlockCount(state),
+    fromLayerIndex: before.layerIndex,
+    toLayerIndex: state.cube.layerIndex,
+    won: state.won
+  };
+}
+
+function advanceOfflineTime(state, seconds, random) {
+  if (seconds <= 0 || state.won) {
+    return;
+  }
+  state.time += seconds;
+  state.resources.orders += state.modifiers.orderRate * seconds;
+
+  const weakInterval = Math.max(7.5, 18 / state.modifiers.weakSpotRate);
+  const totalWeakAge = (state.cube.weakSpot?.age ?? 0) + seconds;
+  const weakRenewals = Math.floor(totalWeakAge / weakInterval);
+  for (let index = 0; index < weakRenewals; index += 1) {
+    state.cube.weakSpot = makeWeakSpot(state.cube.layerIndex, state.time, random);
+  }
+  state.cube.weakSpot.age = totalWeakAge - weakRenewals * weakInterval;
+
+  for (let slotIndex = 0; slotIndex < state.unlockedSlots; slotIndex += 1) {
+    const weapon = state.slots[slotIndex]?.weapon;
+    if (!weapon) {
+      continue;
+    }
+    if (state.modifiers.autoRepair && weapon.condition < 1) {
+      weapon.condition = Math.min(1, weapon.condition + seconds * 0.012);
+    }
+    weapon.cooldown -= seconds;
+  }
+
+  if (state.modifiers.autoCollect) {
+    const bank = ensureBlockBank(state);
+    const accrued = bank.autoCollectCredit + seconds * AUTO_COLLECT_RATE;
+    const due = Math.max(0, Math.floor(accrued + 1e-9));
+    bank.autoCollectCredit = Math.max(0, accrued - due);
+    collectBankedBlocks(state, due, { silent: true });
+  }
+}
+
+function settleVisualBlocksToBank(state) {
+  for (const block of state.blocks) {
+    addBlocksToBank(state, block.value, 1);
+  }
+  state.blocks = [];
+}
+
+function createOfflineRandom(state) {
+  state.offlineRngState = normalizeOfflineRngState(state.offlineRngState);
+  return () => {
+    state.offlineRngState = (state.offlineRngState * 1664525 + 1013904223) >>> 0;
+    return state.offlineRngState / 0x100000000;
+  };
+}
+
+function normalizeOfflineRngState(value) {
+  return Number.isFinite(value) ? Number(value) >>> 0 : DEFAULT_OFFLINE_RNG_STATE;
 }
 
 export function collectBlock(state, blockId) {
@@ -792,7 +962,7 @@ export function getBankedBlockCount(state) {
   return ensureBlockBank(state).buckets.reduce((sum, [, count]) => sum + count, 0);
 }
 
-export function collectBankedBlocks(state, maxCount = Number.POSITIVE_INFINITY) {
+export function collectBankedBlocks(state, maxCount = Number.POSITIVE_INFINITY, options = {}) {
   const bank = ensureBlockBank(state);
   let remaining = Number.isFinite(maxCount) ? Math.max(0, Math.floor(maxCount)) : Number.POSITIVE_INFINITY;
   let collected = 0;
@@ -817,7 +987,9 @@ export function collectBankedBlocks(state, maxCount = Number.POSITIVE_INFINITY) 
     state.resources.shards += gained;
     state.stats.collectedBlocks += collected;
     state.stats.shardsCollected += gained;
-    addFloatingText(state, `Куча: +${gained} оск.`, 0.88, 0.73, "#96e7ff");
+    if (!options.silent) {
+      addFloatingText(state, `Куча: +${gained} оск.`, 0.88, 0.73, "#96e7ff");
+    }
   }
   return { ok: collected > 0, collected, gained };
 }
@@ -875,6 +1047,8 @@ export function migrateSaveData(parsed) {
   state.blocks = Array.isArray(state.blocks) ? state.blocks : [];
   state.blockBank = normalizeBlockBank(state.blockBank);
   compactExcessBlocks(state);
+  state.savedAtMs = Number.isFinite(state.savedAtMs) ? Math.max(0, Math.floor(state.savedAtMs)) : null;
+  state.offlineRngState = normalizeOfflineRngState(state.offlineRngState);
 
   state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
   state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
@@ -904,35 +1078,49 @@ function applyDamage(state, damage, x, y, options) {
     if (state.cube.layerHp[index] <= 0 && index === state.cube.layerIndex) {
       state.cube.layerIndex += 1;
       state.stats.layersDestroyed += 1;
-      addFloatingText(state, "слой разрушен", 0.5, 0.35, "#ffe28a");
-      grantLayerReward(state, index);
-      spawnBlocks(state, 16 + index * 8, x, y, 2 + index);
+      if (!options.silent) {
+        addFloatingText(state, "слой разрушен", 0.5, 0.35, "#ffe28a");
+      }
+      grantLayerReward(state, index, { silent: options.silent });
+      spawnBlocks(state, 16 + index * 8, x, y, 2 + index, {
+        bankOnly: options.bankBlocks
+      });
       if (state.cube.layerIndex < CUBE_LAYERS.length) {
-        state.cube.weakSpot = makeWeakSpot(state.cube.layerIndex, state.time);
+        state.cube.weakSpot = makeWeakSpot(
+          state.cube.layerIndex,
+          state.time,
+          options.random ?? Math.random
+        );
       }
     }
   }
 
   state.stats.damage += dealtTotal;
-  state.cube.damageMarks.push({
-    id: state.nextId++,
-    x,
-    y,
-    size: Math.min(0.12, 0.025 + Math.log10(dealtTotal + 1) * 0.018),
-    age: 0,
-    layerIndex: currentLayerIndex,
-    weak: options.hitWeakSpot
-  });
+  if (!options.silent) {
+    state.cube.damageMarks.push({
+      id: state.nextId++,
+      x,
+      y,
+      size: Math.min(0.12, 0.025 + Math.log10(dealtTotal + 1) * 0.018),
+      age: 0,
+      layerIndex: currentLayerIndex,
+      weak: options.hitWeakSpot
+    });
+  }
 
   const blockCount = options.blockOverride ?? computeBlocksFromDamage(dealtTotal, options.quality, options.hitWeakSpot);
-  spawnBlocks(state, blockCount, x, y, Math.max(1, Math.ceil(dealtTotal / 380)));
-  addFloatingText(
-    state,
-    `${options.quality.label} ${formatNumber(dealtTotal)}`,
-    x,
-    y,
-    options.hitWeakSpot ? "#ff8e8e" : "#fff1b7"
-  );
+  spawnBlocks(state, blockCount, x, y, Math.max(1, Math.ceil(dealtTotal / 380)), {
+    bankOnly: options.bankBlocks
+  });
+  if (!options.silent) {
+    addFloatingText(
+      state,
+      `${options.quality.label} ${formatNumber(dealtTotal)}`,
+      x,
+      y,
+      options.hitWeakSpot ? "#ff8e8e" : "#fff1b7"
+    );
+  }
 
   if (options.quality.id === "critical") {
     state.stats.criticalHits += 1;
@@ -941,26 +1129,30 @@ function applyDamage(state, damage, x, y, options) {
   if (getRemainingCubeHp(state) <= 0) {
     state.won = true;
     state.cube.layerIndex = CUBE_LAYERS.length;
-    addFloatingText(state, "Куб пал", 0.5, 0.34, "#ffffff");
+    if (!options.silent) {
+      addFloatingText(state, "Куб пал", 0.5, 0.34, "#ffffff");
+    }
   }
 }
 
-function grantLayerReward(state, layerIndex) {
+function grantLayerReward(state, layerIndex, options = {}) {
   const reward = LAYER_REWARDS[layerIndex];
   const rateBonus = LAYER_ORDER_RATE_BONUS[layerIndex] ?? 0;
   if (reward) {
     state.resources.orders += reward.orders ?? 0;
     state.resources.shards += reward.shards ?? 0;
-    if ((reward.orders ?? 0) > 0) {
+    if (!options.silent && (reward.orders ?? 0) > 0) {
       addFloatingText(state, `Королевская казна: +${formatNumber(reward.orders)} приказов`, 0.5, 0.42, "#ffd76a");
     }
-    if ((reward.shards ?? 0) > 0) {
+    if (!options.silent && (reward.shards ?? 0) > 0) {
       addFloatingText(state, `+${formatNumber(reward.shards)} осколков от гильдии`, 0.5, 0.48, "#96e7ff");
     }
   }
   if (rateBonus > 0) {
     state.modifiers.orderRate += rateBonus;
-    addFloatingText(state, `жалование +${rateBonus} приказов/сек`, 0.5, 0.54, "#f2d075");
+    if (!options.silent) {
+      addFloatingText(state, `жалование +${rateBonus} приказов/сек`, 0.5, 0.54, "#f2d075");
+    }
   }
 }
 
@@ -1043,9 +1235,13 @@ function computeBlocksFromDamage(damage, quality, hitWeakSpot) {
   return Math.min(cap, Math.max(1, Math.floor(damage / 100) + quality.blocks));
 }
 
-function spawnBlocks(state, count, x, y, value = 1) {
+function spawnBlocks(state, count, x, y, value = 1, options = {}) {
   const capped = Math.min(48, Math.max(0, count));
   state.stats.spawnedBlocks += capped;
+  if (options.bankOnly) {
+    addBlocksToBank(state, value, capped);
+    return;
+  }
   for (let index = 0; index < capped; index += 1) {
     const spread = (index / Math.max(1, capped - 1) - 0.5) * 0.28;
     const block = {
@@ -1147,12 +1343,12 @@ function ageEphemera(state, dt) {
   state.floatingTexts = state.floatingTexts.filter((text) => text.age < text.duration);
 }
 
-function makeWeakSpot(layerIndex, startTime) {
+function makeWeakSpot(layerIndex, startTime, random = Math.random) {
   const zoneIndex = Math.min(layerIndex, 3);
   const baseY = [0.18, 0.34, 0.54, 0.7, 0.78][zoneIndex];
   return {
-    x: 0.25 + Math.random() * 0.5,
-    y: Math.min(0.9, baseY + (Math.random() - 0.5) * 0.18),
+    x: 0.25 + random() * 0.5,
+    y: Math.min(0.9, baseY + (random() - 0.5) * 0.18),
     age: 0,
     bornAt: startTime
   };
