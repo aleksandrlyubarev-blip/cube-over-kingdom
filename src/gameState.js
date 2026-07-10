@@ -707,6 +707,10 @@ export function deserializeGameState(serialized) {
 export function migrateSaveData(parsed) {
   const state = parsed;
   const fromVersion = Number.isFinite(state.version) ? state.version : 1;
+  const defaults = createGameState();
+
+  state.modifiers = { ...defaults.modifiers, ...state.modifiers };
+  state.stats = { ...defaults.stats, ...state.stats };
 
   if (fromVersion < 2) {
     const destroyedLayers = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
@@ -733,11 +737,8 @@ export function migrateSaveData(parsed) {
     }
   }
 
-  const defaults = createGameState();
   state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
   state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
-  state.modifiers = { ...defaults.modifiers, ...state.modifiers };
-  state.stats = { ...defaults.stats, ...state.stats };
   state.version = SAVE_VERSION;
   return state;
 }

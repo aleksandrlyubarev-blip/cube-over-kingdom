@@ -5,13 +5,16 @@ import {
   ZONES,
   buildWeapon,
   buyUpgradeNode,
+  canWeaponDamageLayer,
   canBuyUpgradeNode,
   collectBlock,
   createGameState,
   deserializeGameState,
   formatNumber,
   getCurrentLayer,
+  getLayerDamageRule,
   getRemainingCubeHp,
+  getReachableZonesForWeapon,
   getSiegeGateStatus,
   getUnlockedWeaponTypes,
   getWeaponCost,
@@ -54,7 +57,9 @@ const ui = {
   cameraDown: document.querySelector("#cameraDown"),
   cameraHome: document.querySelector("#cameraHome"),
   aimBadge: document.querySelector("#aimBadge"),
+  hintPanel: document.querySelector("#hintPanel"),
   toast: document.querySelector("#toast"),
+  zoneLine: document.querySelector("#zoneLine"),
   saveButton: document.querySelector("#saveButton"),
   resetButton: document.querySelector("#resetButton"),
   victoryDialog: document.querySelector("#victoryDialog"),
@@ -560,7 +565,9 @@ function renderUi() {
   ui.shardsValue.textContent = formatNumber(state.resources.shards);
   ui.hpValue.textContent = `${formatNumber(remainingHp)} HP`;
   const siegeGate = getSiegeGateStatus(state);
-  if (siegeGate.active) {
+  if (state.won) {
+    ui.stageLabel.textContent = "Куб разрушен · начните новую осаду";
+  } else if (siegeGate.active) {
     ui.stageLabel.textContent = siegeGate.affordable
       ? `${currentLayer.name} · ${siegeGate.weaponName} доступна!`
       : `${currentLayer.name} · нужна ${siegeGate.weaponName}: ещё ${describeMissing(siegeGate)}`;
@@ -577,6 +584,7 @@ function renderUi() {
   renderSlots();
   renderWeaponCards();
   renderActionPanel();
+  renderHintPanel();
 }
 
 function renderSlots() {
@@ -651,6 +659,7 @@ function renderActionPanel() {
   ui.upgradeButton.disabled = !weapon || weapon.level >= 3 || !canUpgradeSelected();
   ui.repairButton.disabled = !weapon || weapon.condition > 0.96;
   ui.manualAimButton.disabled = !weapon || !getWeaponType(weapon.typeId).manualAim;
+  renderZoneLine();
 
   if (!slotUnlocked) {
     ui.costLine.textContent = "Откройте площадку в лабиринте";
@@ -662,6 +671,60 @@ function renderActionPanel() {
     const replaceText = weapon.typeId === selectedType.id ? "" : ` · замена: ${formatCost(selectedCost)}`;
     ui.costLine.textContent = `Состояние ${Math.round(weapon.condition * 100)}%${upgradeCost ? ` · улучшение: ${formatCost(upgradeCost)}` : " · максимум уровня"}${replaceText}`;
   }
+}
+
+function renderZoneLine() {
+  if (state.won || state.cube.layerIndex >= CUBE_LAYERS.length) {
+    ui.zoneLine.textContent = "Куб разрушен";
+    ui.zoneLine.classList.remove("warning");
+    return;
+  }
+  const slotWeapon = state.slots[state.selectedSlot]?.weapon;
+  const type = slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
+  const source = slotWeapon ? "В слоте" : "К постройке";
+  const layerIndex = state.cube.layerIndex;
+  const rule = getLayerDamageRule(layerIndex);
+  const reaches =
+    canWeaponDamageLayer(type, layerIndex) ||
+    canWeaponDamageLayer(type, layerIndex, { hitWeakSpot: true });
+  const weaponZones = describeWeaponZones(type);
+  const layerZones = describeLayerRule(rule);
+  const overlap = getReachableZonesForWeapon(type, layerIndex);
+
+  ui.zoneLine.classList.toggle("warning", !reaches);
+  if (reaches) {
+    const overlapText = overlap.length > 0 ? ` · достаёт: ${overlap.map(formatZoneName).join(", ")}` : "";
+    ui.zoneLine.textContent = `${source}: ${type.name} · ${weaponZones}${overlapText}`;
+  } else {
+    ui.zoneLine.textContent = `${source}: ${type.name} не достаёт до слоя. Нужны: ${layerZones}`;
+  }
+}
+
+function renderHintPanel() {
+  const hint = getContextHint();
+  ui.hintPanel.classList.toggle("hidden", !hint);
+  ui.hintPanel.textContent = hint ?? "";
+}
+
+function getContextHint() {
+  if (state.won) {
+    return "Куб пал. Начните новую осаду, чтобы проверить другой билд.";
+  }
+  const stoneCost = getWeaponCost(getWeaponType("stoneThrower"), 1).orders;
+  if (state.stats.builtWeapons === 0) {
+    if (state.resources.orders < stoneCost) {
+      return `Цель: ${stoneCost} приказов на первый камнемёт. Текущие приказы: ${formatNumber(state.resources.orders)}.`;
+    }
+    return "Первый камнемёт готов к строительству: выберите свободную площадку.";
+  }
+  if (state.stats.collectedBlocks === 0 && state.blocks.some((block) => block.resting)) {
+    return "На поле лежат блоки куба: соберите их для первых осколков.";
+  }
+  const selectedType = getWeaponType(state.selectedWeaponType);
+  if (state.stats.blockedShots > 0 && !canWeaponDamageLayer(selectedType, state.cube.layerIndex)) {
+    return "Если урон остановился, выберите орудие с зоной текущего слоя.";
+  }
+  return null;
 }
 
 function renderLabyrinth() {
@@ -881,6 +944,25 @@ function describeMissing(gate) {
     parts.push(`${formatNumber(gate.missingShards)} осколков`);
   }
   return parts.join(" · ") || "готово";
+}
+
+function describeWeaponZones(type) {
+  const zones = type.zones.filter((zone) => zone !== "weak").map(formatZoneName);
+  if (type.zones.includes("weak")) {
+    zones.push("слабые места");
+  }
+  return zones.join(", ") || "нет зоны";
+}
+
+function describeLayerRule(rule) {
+  if (rule.weaponTypes?.length) {
+    return rule.weaponTypes.map((typeId) => getWeaponType(typeId).name).join(", ");
+  }
+  return rule.zones.map(formatZoneName).join(", ");
+}
+
+function formatZoneName(zoneId) {
+  return ZONES[zoneId]?.name.toLowerCase() ?? zoneId;
 }
 
 function formatCost(cost) {
