@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   CUBE_LAYERS,
+  QUALITY_TABLE,
   UPGRADE_NODES,
   WEAPON_TYPES,
   buildWeapon,
@@ -10,11 +12,14 @@ import {
   canAfford,
   canBuyUpgradeNode,
   canWeaponDamageLayer,
+  calculateWeaponShotDamage,
+  collectBankedBlocks,
   collectBlock,
   createGameState,
   estimateWeaponDps,
   formatNumber,
   getLayerDamageRule,
+  getBankedBlockCount,
   getRemainingCubeHp,
   getUnlockedWeaponTypes,
   getWeaponCost,
@@ -22,6 +27,7 @@ import {
   manualAimAt,
   repairWeapon,
   replaceWeapon,
+  simulateOfflineProgress,
   tapForOrders,
   tickGame,
   upgradeWeapon
@@ -30,18 +36,15 @@ import {
   calculateBudgetPartition,
   calculateHardGateEconomy,
   calculateHpReshuffle,
+  calculateObservedBudgetStatus,
   summarizeProfileGuardrails
 } from "../src/balanceSolver.js";
 import { createTelemetrySampler } from "../src/telemetry.js";
 
-const args = new Set(process.argv.slice(2));
-const shouldWrite = args.has("--write");
-const outDir = path.resolve("output/balance");
-
-const PROFILES = [
+export const SOLVER_PROFILES = [
   {
     id: "passive",
-    name: "Пассивный",
+    name: "Пассивный под присмотром",
     seed: 1101,
     maxSeconds: 6 * 60 * 60,
     tapRate: 0.18,
@@ -54,7 +57,8 @@ const PROFILES = [
     nodeLimit: 4,
     targetSlots: 2,
     buildStrategy: "starter",
-    upgradeStrategy: "cheap"
+    upgradeStrategy: "cheap",
+    repairThreshold: 0.55
   },
   {
     id: "steady",
@@ -71,7 +75,9 @@ const PROFILES = [
     nodeLimit: 8,
     targetSlots: 4,
     buildStrategy: "balanced",
-    upgradeStrategy: "lowestLevel"
+    upgradeStrategy: "lowestLevel",
+    repairThreshold: 0.55,
+    manualStrategy: "first-ready"
   },
   {
     id: "optimizer",
@@ -88,39 +94,90 @@ const PROFILES = [
     nodeLimit: UPGRADE_NODES.length,
     targetSlots: 4,
     buildStrategy: "highestDps",
-    upgradeStrategy: "dpsGain"
+    upgradeStrategy: "dpsGain",
+    repairThreshold: 0.55,
+    manualStrategy: "highest-weak-damage"
   }
 ];
 
-const budgetPartition = calculateBudgetPartition();
-const currentLayerHp = CUBE_LAYERS.map((layer) => layer.hp);
-const hpSolverIterations = buildHpSolverIterations(currentLayerHp, 1);
-const currentIteration = hpSolverIterations[0];
+export const DIAGNOSTIC_PROFILES = [
+  {
+    id: "neglectful3x30",
+    name: "Запущенный лагерь: 3x30 мин",
+    seed: 4404,
+    sessionCount: 3,
+    sessionSeconds: 30 * 60,
+    offlineBetweenSessions: 60 * 60,
+    maxSeconds: 3 * 30 * 60,
+    tapRate: 0.08,
+    activeTapUntil: 3 * 30 * 60,
+    collectEvery: 30,
+    collectFraction: 0.2,
+    spendEvery: 20,
+    sampleEvery: 30 * 60,
+    manualEvery: null,
+    nodeLimit: 2,
+    targetSlots: 2,
+    buildStrategy: "starter",
+    upgradeStrategy: "cheap",
+    repairThreshold: null
+  }
+];
 
-const report = {
-  generatedAt: new Date().toISOString(),
-  layerHp: CUBE_LAYERS.map((layer) => ({ id: layer.id, name: layer.name, hp: layer.hp })),
-  dpsTable: buildDpsTable(),
-  stagePressure: buildStagePressureTable(),
-  profiles: currentIteration.profiles,
-  budgetPartition,
-  budgetProjection: currentIteration.budgetProjection,
-  guardrails: currentIteration.guardrails,
-  combatGuardrails: currentIteration.combatGuardrails,
-  hardGateEconomy: currentIteration.hardGateEconomy,
-  hpReshuffle: currentIteration.reshuffle,
-  reshufflePreviewProfiles: currentIteration.previewProfiles,
-  reshufflePreviewGuardrails: currentIteration.previewGuardrails,
-  reshufflePreviewCombatGuardrails: currentIteration.previewCombatGuardrails,
-  hpSolverIterations
-};
+export function buildBalanceReport(options = {}) {
+  const solverProfiles = options.solverProfiles ?? SOLVER_PROFILES;
+  const diagnosticProfiles = options.diagnosticProfiles ?? DIAGNOSTIC_PROFILES;
+  const budgetPartition = options.budgetPartition ?? calculateBudgetPartition();
+  const currentLayerHp = options.layerHp ?? CUBE_LAYERS.map((layer) => layer.hp);
+  const hpSolverIterations = buildHpSolverIterations(
+    currentLayerHp,
+    options.iterationCount ?? 1,
+    solverProfiles,
+    budgetPartition
+  );
+  const currentIteration = hpSolverIterations[0];
+  const referenceProfile = currentIteration.profiles.find((profile) => profile.id === "passive");
 
-printReport(report);
+  return {
+    generatedAt: new Date().toISOString(),
+    layerHp: CUBE_LAYERS.map((layer, index) => ({ ...layer, hp: currentLayerHp[index] })),
+    dpsTable: buildDpsTable(),
+    stagePressure: buildStagePressureTable(),
+    profiles: currentIteration.profiles,
+    diagnosticProfiles: diagnosticProfiles.map((profile) => simulateProfile(profile, currentLayerHp)),
+    budgetPartition,
+    budgetProjection: currentIteration.budgetProjection,
+    observedBudget: referenceProfile
+      ? calculateObservedBudgetStatus({ profile: referenceProfile, partition: budgetPartition })
+      : null,
+    guardrails: currentIteration.guardrails,
+    combatGuardrails: currentIteration.combatGuardrails,
+    hardGateEconomy: currentIteration.hardGateEconomy,
+    hpReshuffle: currentIteration.reshuffle,
+    reshufflePreviewProfiles: currentIteration.previewProfiles,
+    reshufflePreviewGuardrails: currentIteration.previewGuardrails,
+    reshufflePreviewCombatGuardrails: currentIteration.previewCombatGuardrails,
+    hpSolverIterations
+  };
+}
 
-if (shouldWrite) {
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(path.join(outDir, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);
-  fs.writeFileSync(path.join(outDir, "latest.md"), renderMarkdown(report));
+function runCli() {
+  const args = new Set(process.argv.slice(2));
+  const shouldWrite = args.has("--write");
+  const outDir = path.resolve("output/balance");
+  const report = buildBalanceReport();
+  printReport(report);
+
+  if (shouldWrite) {
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);
+    fs.writeFileSync(path.join(outDir, "latest.md"), renderMarkdown(report));
+  }
+}
+
+const isCli = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isCli) {
+  runCli();
 }
 
 function buildDpsTable() {
@@ -165,7 +222,7 @@ function buildStagePressureTable() {
   });
 }
 
-function simulateProfile(profile, layerHpOverride = null) {
+export function simulateProfile(profile, layerHpOverride = null) {
   const rng = createRng(profile.seed);
   const state = createGameState();
   if (layerHpOverride) {
@@ -182,50 +239,128 @@ function simulateProfile(profile, layerHpOverride = null) {
   let nextManual = profile.manualEvery ?? Number.POSITIVE_INFINITY;
   let currentLayer = state.cube.layerIndex;
   let currentLayerTimer = startLayerTimer(state, currentLayer, 0);
+  let manualPending = false;
+  let activeElapsedSeconds = 0;
+  let offlineElapsedSeconds = 0;
+  let currentSessionSeconds = 0;
+  let completedSessionGaps = 0;
+  const manual = {
+    scheduled: 0,
+    hits: 0,
+    noEligible: 0,
+    notReady: 0
+  };
   openCombatIfReady(currentLayerTimer, state);
 
+  const recordLayerTransitions = () => {
+    if (state.cube.layerIndex === currentLayer) {
+      return;
+    }
+    for (let layerIndex = currentLayer; layerIndex < state.cube.layerIndex; layerIndex += 1) {
+      const timer =
+        layerIndex === currentLayer
+          ? currentLayerTimer
+          : startLayerTimer(state, layerIndex, state.time);
+      layerDurations.push(finalizeLayerTimer(timer, state.time));
+      events.push(`[${formatDuration(state.time)}] layer destroyed: ${CUBE_LAYERS[layerIndex].name}`);
+    }
+    currentLayer = state.cube.layerIndex;
+    currentLayerTimer = startLayerTimer(state, currentLayer, state.time);
+    openCombatIfReady(currentLayerTimer, state);
+  };
+
   return withRandom(rng, () => {
-    while (!state.won && state.time < profile.maxSeconds) {
-      const dt = 1;
-      if (state.time < profile.activeTapUntil) {
+    while (!state.won && activeElapsedSeconds < profile.maxSeconds) {
+      const sessionRemaining = profile.sessionSeconds
+        ? Math.max(0, profile.sessionSeconds - currentSessionSeconds)
+        : Number.POSITIVE_INFINITY;
+      const dt = Math.min(1, profile.maxSeconds - activeElapsedSeconds, sessionRemaining);
+      const activeStepStartedAt = state.time;
+      if (activeElapsedSeconds < profile.activeTapUntil) {
         tapForOrders(state, profile.tapRate * dt);
       }
 
-      if (state.time >= nextManual) {
-        tryManualAim(state, events);
+      if (activeElapsedSeconds >= nextManual) {
+        manual.scheduled += 1;
+        if (getEligibleManualSlots(state).length > 0) {
+          manualPending = true;
+        } else {
+          manual.noEligible += 1;
+        }
         nextManual += profile.manualEvery;
       }
 
-      tickGame(state, dt, rng);
-
-      if (state.cube.layerIndex !== currentLayer) {
-        for (let layerIndex = currentLayer; layerIndex < state.cube.layerIndex; layerIndex += 1) {
-          const timer =
-            layerIndex === currentLayer
-              ? currentLayerTimer
-              : startLayerTimer(state, layerIndex, state.time);
-          layerDurations.push(finalizeLayerTimer(timer, state.time));
-          events.push(`[${formatDuration(state.time)}] layer destroyed: ${CUBE_LAYERS[layerIndex].name}`);
+      let remainingDt = dt;
+      if (manualPending) {
+        const manualResult = executePendingManualAim(
+          state,
+          profile.manualStrategy,
+          remainingDt,
+          rng
+        );
+        remainingDt = manualResult.remainingSeconds;
+        if (manualResult.status === "hit") {
+          manual.hits += 1;
+          manualPending = false;
+          events.push(
+            `[${formatDuration(state.time)}] manual weak hit for ${formatNumber(manualResult.damage)}`
+          );
+        } else if (manualResult.status === "no-eligible") {
+          manual.noEligible += 1;
+          manualPending = false;
+        } else if (manualResult.status === "resolved") {
+          manualPending = false;
+        } else {
+          manual.notReady += 1;
         }
-        currentLayer = state.cube.layerIndex;
-        currentLayerTimer = startLayerTimer(state, currentLayer, state.time);
-        openCombatIfReady(currentLayerTimer, state);
       }
 
-      if (state.time >= nextCollect) {
+      recordLayerTransitions();
+      if (state.won) {
+        break;
+      }
+      if (remainingDt > 1e-9) {
+        tickGame(state, remainingDt, rng);
+      }
+      recordLayerTransitions();
+
+      const activeStepSeconds = Math.max(0, state.time - activeStepStartedAt);
+      activeElapsedSeconds += activeStepSeconds;
+      currentSessionSeconds += activeStepSeconds;
+
+      if (activeElapsedSeconds >= nextCollect) {
         collectBlocksForProfile(state, profile.collectFraction);
         nextCollect += profile.collectEvery;
       }
 
-      if (state.time >= nextSpend) {
+      if (activeElapsedSeconds >= nextSpend) {
         spendForProfile(state, profile, events);
         openCombatIfReady(currentLayerTimer, state);
         nextSpend += profile.spendEvery;
       }
 
-      if (state.time >= nextSample) {
+      if (activeElapsedSeconds >= nextSample) {
         samples.push(telemetry.sample(profile.id));
         nextSample += profile.sampleEvery;
+      }
+
+      const hasAnotherSession =
+        profile.sessionCount && completedSessionGaps < profile.sessionCount - 1;
+      if (
+        !state.won &&
+        hasAnotherSession &&
+        currentSessionSeconds >= profile.sessionSeconds - 1e-9
+      ) {
+        const offline = simulateOfflineProgress(state, profile.offlineBetweenSessions ?? 0);
+        offlineElapsedSeconds += offline.simulatedSeconds;
+        completedSessionGaps += 1;
+        currentSessionSeconds = 0;
+        events.push(
+          `[${formatDuration(state.time)}] offline catch-up ${formatDuration(offline.simulatedSeconds)}, damage ${formatNumber(
+            offline.damageDealt
+          )}`
+        );
+        recordLayerTransitions();
       }
     }
 
@@ -241,6 +376,8 @@ function simulateProfile(profile, layerHpOverride = null) {
       name: profile.name,
       completed: state.won,
       elapsedSeconds: Math.round(state.time),
+      activeElapsedSeconds: Math.round(activeElapsedSeconds),
+      offlineElapsedSeconds: Math.round(offlineElapsedSeconds),
       combatElapsedSeconds: Math.round(combatElapsedSeconds),
       acquisitionWaitSeconds: Math.round(acquisitionWaitSeconds),
       elapsed: formatDuration(state.time),
@@ -263,6 +400,7 @@ function simulateProfile(profile, layerHpOverride = null) {
         builtWeapons: state.stats.builtWeapons,
         layersDestroyed: state.stats.layersDestroyed
       },
+      manual,
       weapons: state.slots
         .filter((slot) => slot.weapon)
         .map((slot) => ({
@@ -279,7 +417,7 @@ function simulateProfile(profile, layerHpOverride = null) {
   });
 }
 
-function buildHpReshuffle(profiles, layerHp) {
+function buildHpReshuffle(profiles, layerHp, budgetPartition) {
   const passive = profiles.find((profile) => profile.id === "passive");
   if (!passive?.completed || passive.layerDurations.length !== CUBE_LAYERS.length) {
     return null;
@@ -291,7 +429,7 @@ function buildHpReshuffle(profiles, layerHp) {
   });
 }
 
-function buildHardGateEconomy(profiles) {
+function buildHardGateEconomy(profiles, budgetPartition) {
   const passive = profiles.find((profile) => profile.id === "passive");
   if (!passive?.completed) {
     return null;
@@ -302,7 +440,7 @@ function buildHardGateEconomy(profiles) {
   });
 }
 
-function buildBudgetProjection(reshuffle) {
+function buildBudgetProjection(reshuffle, budgetPartition) {
   const projectedCombatSeconds = reshuffle.targetTotalSeconds;
   const projectedAcquisitionSeconds = budgetPartition.acquisitionTargetSeconds;
   const projectedTotalSeconds = projectedCombatSeconds + projectedAcquisitionSeconds;
@@ -319,17 +457,17 @@ function buildBudgetProjection(reshuffle) {
   };
 }
 
-function buildHpSolverIterations(initialHp, iterationCount) {
+function buildHpSolverIterations(initialHp, iterationCount, solverProfiles, budgetPartition) {
   const iterations = [];
   let layerHp = [...initialHp];
 
   for (let index = 0; index < iterationCount; index += 1) {
-    const profiles = PROFILES.map((profile) => simulateProfile(profile, layerHp));
-    const reshuffle = buildHpReshuffle(profiles, layerHp);
-    const hardGateEconomy = buildHardGateEconomy(profiles);
-    const budgetProjection = reshuffle ? buildBudgetProjection(reshuffle) : null;
+    const profiles = solverProfiles.map((profile) => simulateProfile(profile, layerHp));
+    const reshuffle = buildHpReshuffle(profiles, layerHp, budgetPartition);
+    const hardGateEconomy = buildHardGateEconomy(profiles, budgetPartition);
+    const budgetProjection = reshuffle ? buildBudgetProjection(reshuffle, budgetPartition) : null;
     const previewProfiles = reshuffle
-      ? PROFILES.map((profile) => simulateProfile(profile, reshuffle.suggestedHp))
+      ? solverProfiles.map((profile) => simulateProfile(profile, reshuffle.suggestedHp))
       : [];
     iterations.push({
       iteration: index + 1,
@@ -376,10 +514,14 @@ function buildSolverWarnings(reshuffle, hardGateEconomy) {
   }
   for (const row of hardGateEconomy?.rows ?? []) {
     if (!row.ok) {
+      const diagnosis =
+        row.fundingStatus === "prefunded"
+          ? "gate was already funded; wait measures spending cadence, not income"
+          : `limiting resource ${row.limitingResource ?? "unknown"}`;
       warnings.push(
         `L${row.layerIndex + 1} ${row.layerName}: acquisition ${formatDuration(
           row.observedSeconds
-        )} vs target ${formatDuration(row.targetSeconds)}; limiting resource ${row.limitingResource ?? "unknown"}`
+        )} vs target ${formatDuration(row.targetSeconds)}; ${diagnosis}`
       );
     }
   }
@@ -481,7 +623,9 @@ function spendForProfile(state, profile, events) {
       buyAvailableNode(state, profile, events) ||
       buildAvailableWeapon(state, profile, events) ||
       upgradeAvailableWeapon(state, profile, events) ||
-      repairDamagedWeapon(state, events);
+      (profile.repairThreshold === null
+        ? false
+        : repairDamagedWeapon(state, events, profile.repairThreshold ?? 0.55));
 
     if (!action) {
       return;
@@ -652,9 +796,9 @@ function getDpsGain(weapon) {
   );
 }
 
-function repairDamagedWeapon(state, events) {
+function repairDamagedWeapon(state, events, threshold) {
   const slot = state.slots
-    .filter((item) => item.weapon && item.weapon.condition < 0.55)
+    .filter((item) => item.weapon && item.weapon.condition < threshold)
     .sort((a, b) => a.weapon.condition - b.weapon.condition)[0];
   if (!slot) {
     return false;
@@ -667,17 +811,111 @@ function repairDamagedWeapon(state, events) {
   return false;
 }
 
-function tryManualAim(state, events) {
-  const slot = state.slots.find((item) => item.weapon && getWeaponType(item.weapon.typeId).manualAim);
+function getEligibleManualSlots(state) {
+  return state.slots.filter((slot, index) => {
+    if (index >= state.unlockedSlots || !slot.weapon) {
+      return false;
+    }
+    const type = getWeaponType(slot.weapon.typeId);
+    return type.manualAim && canWeaponDamageLayer(type, state.cube.layerIndex, { hitWeakSpot: true });
+  });
+}
+
+export function executePendingManualAim(
+  state,
+  strategy = "first-ready",
+  windowSeconds = 1,
+  random = Math.random
+) {
+  const eligible = getEligibleManualSlots(state);
+  if (eligible.length === 0) {
+    return {
+      status: "no-eligible",
+      advancedSeconds: 0,
+      remainingSeconds: windowSeconds
+    };
+  }
+  const slot = selectManualAimSlot(state, strategy, windowSeconds);
   if (!slot) {
-    return false;
+    return {
+      status: "not-ready",
+      advancedSeconds: 0,
+      remainingSeconds: windowSeconds
+    };
   }
+
+  const readyIn = Math.max(0, Math.min(windowSeconds, slot.weapon.cooldown));
+  if (readyIn > 0) {
+    advanceWithoutWeaponFire(state, slot, readyIn, random);
+  }
+  const remainingSeconds = Math.max(0, windowSeconds - readyIn);
+  if (state.won) {
+    return {
+      status: "resolved",
+      advancedSeconds: readyIn,
+      remainingSeconds,
+      slotId: slot.id
+    };
+  }
+  if (!getEligibleManualSlots(state).some((candidate) => candidate.id === slot.id)) {
+    return {
+      status: "no-eligible",
+      advancedSeconds: readyIn,
+      remainingSeconds,
+      slotId: slot.id
+    };
+  }
+
   const result = manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, slot.id);
-  if (result.ok) {
-    events.push(`[${formatDuration(state.time)}] manual weak hit for ${formatNumber(result.damage)}`);
-    return true;
+  if (!result.ok) {
+    return {
+      status: result.reason === "range" || result.reason === "weapon" ? "no-eligible" : "not-ready",
+      advancedSeconds: readyIn,
+      remainingSeconds,
+      slotId: slot.id
+    };
   }
-  return false;
+  return {
+    status: "hit",
+    advancedSeconds: readyIn,
+    remainingSeconds,
+    slotId: slot.id,
+    damage: result.damage
+  };
+}
+
+function advanceWithoutWeaponFire(state, slot, seconds, random) {
+  const weapon = slot.weapon;
+  const startingCooldown = weapon.cooldown;
+  weapon.cooldown = Number.POSITIVE_INFINITY;
+  tickGame(state, seconds, random);
+  if (slot.weapon === weapon) {
+    weapon.cooldown = Math.max(0, startingCooldown - seconds);
+  }
+}
+
+export function selectManualAimSlot(state, strategy = "first-ready", maxLeadSeconds = 1) {
+  const ready = getEligibleManualSlots(state).filter(
+    (slot) => slot.weapon.cooldown <= maxLeadSeconds + 1e-9
+  );
+  ready.sort((left, right) => {
+    if (strategy === "highest-weak-damage") {
+      return estimateManualWeakDamage(state, right) - estimateManualWeakDamage(state, left) || left.id - right.id;
+    }
+    return left.weapon.cooldown - right.weapon.cooldown || left.id - right.id;
+  });
+  return ready[0] ?? null;
+}
+
+function estimateManualWeakDamage(state, slot) {
+  return calculateWeaponShotDamage({
+    type: getWeaponType(slot.weapon.typeId),
+    level: slot.weapon.level,
+    quality: QUALITY_TABLE[2],
+    condition: slot.weapon.condition,
+    damageMultiplier: state.modifiers.damageMultiplier,
+    hitWeakSpot: true
+  });
 }
 
 function collectBlocksForProfile(state, fraction) {
@@ -685,6 +923,7 @@ function collectBlocksForProfile(state, fraction) {
   for (const block of state.blocks.slice(0, count)) {
     collectBlock(state, block.id);
   }
+  collectBankedBlocks(state, Math.ceil(getBankedBlockCount(state) * fraction));
 }
 
 function createRng(seed) {
@@ -724,7 +963,7 @@ function printReport(data) {
         profile.remainingHp
       )} HP, combat ${profile.combatElapsed}, acq ${profile.acquisitionWait}, shards collected ${formatNumber(
         profile.stats.shardsCollected
-      )}, shots ${profile.stats.shots}`
+      )}, shots ${profile.stats.shots}, manual ${profile.manual.hits}/${profile.manual.scheduled}`
     );
     for (const layer of profile.layerDurations) {
       console.log(
@@ -735,9 +974,11 @@ function printReport(data) {
     }
   }
   printBudgetPartition(data.budgetPartition, data.budgetProjection);
+  printObservedBudget(data.observedBudget);
   printGuardrails("Current total guardrails", data.guardrails);
   printGuardrails("Current combat guardrails", data.combatGuardrails);
   printHardGateEconomy(data.hardGateEconomy);
+  printDiagnosticProfiles(data.diagnosticProfiles);
 
   if (data.hpReshuffle) {
     console.log("");
@@ -784,6 +1025,39 @@ function printReport(data) {
   }
 }
 
+function printObservedBudget(observedBudget) {
+  if (!observedBudget) {
+    return;
+  }
+  console.log("");
+  console.log("Observed reference budget:");
+  for (const [name, metric] of Object.entries(observedBudget.metrics)) {
+    console.log(
+      `- ${name}: ${formatDuration(metric.observedSeconds)} vs ${formatDuration(metric.targetSeconds)}, ${metric.status}`
+    );
+  }
+  console.log(`- combined observed guard: ok=${observedBudget.ok}`);
+}
+
+function printDiagnosticProfiles(profiles) {
+  if (!profiles?.length) {
+    return;
+  }
+  console.log("");
+  console.log("Diagnostics (excluded from solver guardrails):");
+  for (const profile of profiles) {
+    console.log(
+      `- ${profile.name}: ${profile.completed ? "win" : "not finished"} after ${profile.elapsed}, remaining ${formatNumber(
+        profile.remainingHp
+      )} HP, condition floor ${Math.round(
+        Math.min(...profile.weapons.map((weapon) => weapon.condition), 1) * 100
+      )}% (${formatDuration(profile.activeElapsedSeconds)} active + ${formatDuration(
+        profile.offlineElapsedSeconds
+      )} catch-up)`
+    );
+  }
+}
+
 function printBudgetPartition(partition, projection) {
   if (!partition) {
     return;
@@ -817,12 +1091,13 @@ function printHardGateEconomy(hardGateEconomy) {
   console.log("");
   console.log("Hard-gate acquisition economy:");
   for (const row of hardGateEconomy.rows) {
+    const recommendation = row.suggestedCost ? `cost cap ${formatCost(row.suggestedCost)}` : "no cost cap";
     console.log(
       `- L${row.layerIndex + 1} ${row.layerName}: acquisition ${formatDuration(
         row.observedSeconds
-      )} vs target ${formatDuration(row.targetSeconds)}, limiting ${row.limitingResource ?? "-"}, suggested cost <= ${formatCost(
-        row.suggestedCost
-      )}`
+      )} vs target ${formatDuration(row.targetSeconds)} (${row.status}), limiting ${
+        row.limitingResource ?? "-"
+      }, funding ${row.fundingStatus}, ${recommendation}`
     );
   }
 }
@@ -875,7 +1150,11 @@ function renderMarkdown(data) {
           )} = ${formatDuration(data.budgetProjection.projectedTotalSeconds)}`
         : "-"
     } |`,
-    `| Budget guard OK | ${data.budgetProjection?.ok ? "yes" : "no"} |`,
+    `| Budget construction guard OK | ${data.budgetProjection?.ok ? "yes" : "no"} |`,
+    `| Observed total | ${formatObservedBudgetMetric(data.observedBudget?.metrics.total)} |`,
+    `| Observed combat | ${formatObservedBudgetMetric(data.observedBudget?.metrics.combat)} |`,
+    `| Observed acquisition | ${formatObservedBudgetMetric(data.observedBudget?.metrics.acquisition)} |`,
+    `| Observed budget guard OK | ${data.observedBudget?.ok ? "yes" : "no"} |`,
     "",
     "## Guardrails",
     "",
@@ -926,14 +1205,16 @@ function renderMarkdown(data) {
         "",
         "## Hard-Gate Acquisition Economy",
         "",
-        "| Layer | Observed wait | Target wait | Limiting resource | Suggested cost cap | OK |",
-        "| --- | ---: | ---: | --- | ---: | --- |"
+        "| Layer | Observed wait | Target band | Funding | Limiting resource | Suggested cost cap | Status |",
+        "| --- | ---: | ---: | --- | --- | ---: | --- |"
       );
       for (const row of data.hardGateEconomy.rows) {
         lines.push(
           `| ${row.layerName} | ${formatDuration(row.observedSeconds)} | ${formatDuration(
-            row.targetSeconds
-          )} | ${row.limitingResource ?? "-"} | ${formatCost(row.suggestedCost)} | ${row.ok ? "yes" : "no"} |`
+            row.targetMinSeconds
+          )}-${formatDuration(row.targetMaxSeconds)} | ${row.fundingStatus} | ${
+            row.limitingResource ?? "-"
+          } | ${row.suggestedCost ? formatCost(row.suggestedCost) : "-"} | ${row.status} |`
         );
       }
     }
@@ -1027,6 +1308,9 @@ function renderMarkdown(data) {
       `| Collected blocks | ${profile.stats.collectedBlocks} |`,
       `| Shards collected | ${profile.stats.shardsCollected} |`,
       `| Manual weak hits | ${profile.stats.manualWeakHits} |`,
+      `| Manual scheduled | ${profile.manual.scheduled} |`,
+      `| Manual not ready | ${profile.manual.notReady} |`,
+      `| Manual no eligible weapon | ${profile.manual.noEligible} |`,
       "",
       "| Layer | Total | Acq | Combat | Ended at |",
       "| --- | ---: | ---: | ---: | ---: |"
@@ -1043,7 +1327,28 @@ function renderMarkdown(data) {
     }
     lines.push("");
   }
+
+  lines.push("", "## Diagnostics (Excluded From Solver Guardrails)", "");
+  for (const profile of data.diagnosticProfiles ?? []) {
+    lines.push(
+      `### ${profile.name}`,
+      "",
+      `Result: ${profile.completed ? "win" : "not finished"} after ${profile.elapsed} (${formatDuration(
+        profile.activeElapsedSeconds
+      )} active + ${formatDuration(profile.offlineElapsedSeconds)} catch-up); remaining HP: ${
+        profile.remainingHp
+      }; collected shards: ${profile.stats.shardsCollected}.`,
+      ""
+    );
+  }
   return `${lines.join("\n")}\n`;
+}
+
+function formatObservedBudgetMetric(metric) {
+  if (!metric) {
+    return "-";
+  }
+  return `${formatDuration(metric.observedSeconds)} / ${formatDuration(metric.targetSeconds)} (${metric.status})`;
 }
 
 function formatDuration(seconds) {

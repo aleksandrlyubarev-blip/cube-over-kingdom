@@ -1,14 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AUTO_COLLECT_RATE,
   CUBE_LAYERS,
   LAYER_ORDER_RATE_BONUS,
   LAYER_REWARDS,
   LEGACY_V1_LAYER_HP,
+  MAX_VISUAL_BLOCKS,
+  OFFLINE_PROGRESS_CAP_SECONDS,
   SAVE_VERSION,
+  addBlocksToBank,
+  collectBankedBlocks,
   deserializeGameState,
+  getBankedBlockCount,
+  getCurrentLayerProgress,
   getSiegeGateStatus,
+  getLayerVulnerabilitySummary,
+  getReplacementPreview,
+  getWeaponLayerReachStatus,
   serializeGameState,
+  simulateOfflineProgress,
   buildWeapon,
   buyUpgradeNode,
   canBuyUpgradeNode,
@@ -97,6 +108,84 @@ test("collecting a fallen block grants cube shards", () => {
   assert.equal(result.gained, 4);
   assert.equal(state.resources.shards, 4);
   assert.equal(state.stats.shardsCollected, 4);
+});
+
+test("block overflow is compacted without losing pending shard value", () => {
+  const state = createGameState();
+  state.resources.orders = 1000;
+  state.resources.shards = 100;
+  state.cube.layerHp[0] = 1_000_000;
+  buildWeapon(state, 0, "ballista");
+
+  for (let index = 0; index < 5; index += 1) {
+    state.slots[0].weapon.cooldown = 0;
+    const target = state.cube.weakSpot;
+    const result = manualAimAt(state, target.x, target.y, 0);
+    assert.equal(result.ok, true);
+  }
+
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(getBankedBlockCount(state), state.stats.spawnedBlocks - MAX_VISUAL_BLOCKS);
+
+  const visualValue = state.blocks.reduce(
+    (sum, block) => sum + Math.max(1, Math.round(block.value * state.modifiers.shardYield)),
+    0
+  );
+  const banked = collectBankedBlocks(state);
+  assert.equal(banked.collected, state.stats.spawnedBlocks - MAX_VISUAL_BLOCKS);
+  assert.equal(state.stats.shardsCollected, banked.gained);
+
+  for (const block of [...state.blocks]) {
+    collectBlock(state, block.id);
+  }
+  assert.equal(state.stats.shardsCollected, visualValue + banked.gained);
+});
+
+test("banked blocks preserve per-block shard rounding", () => {
+  const state = createGameState();
+  state.modifiers.shardYield = 1.5;
+  addBlocksToBank(state, 2, 3);
+  addBlocksToBank(state, 5, 2);
+
+  const result = collectBankedBlocks(state);
+
+  assert.equal(result.collected, 5);
+  assert.equal(result.gained, 25);
+  assert.equal(getBankedBlockCount(state), 0);
+  assert.equal(state.resources.shards, 25);
+});
+
+test("auto collect rate is independent of tick frequency", () => {
+  const simulate = (dt, ticks) => {
+    const state = createGameState();
+    state.modifiers.autoCollect = true;
+    addBlocksToBank(state, 1, 100);
+    for (let index = 0; index < ticks; index += 1) {
+      tickGame(state, dt, () => 0.5);
+    }
+    return state;
+  };
+
+  const oneTick = simulate(1, 1);
+  const sixtyTicks = simulate(1 / 60, 60);
+
+  assert.equal(oneTick.stats.collectedBlocks, AUTO_COLLECT_RATE);
+  assert.equal(sixtyTicks.stats.collectedBlocks, AUTO_COLLECT_RATE);
+  assert.equal(oneTick.resources.shards, sixtyTicks.resources.shards);
+  assert.equal(getBankedBlockCount(oneTick), getBankedBlockCount(sixtyTicks));
+});
+
+test("auto collect does not bank unused whole-block credit", () => {
+  const state = createGameState();
+  state.modifiers.autoCollect = true;
+
+  tickGame(state, 10, () => 0.5);
+  addBlocksToBank(state, 1, 2);
+  tickGame(state, 0, () => 0.5);
+  assert.equal(state.stats.collectedBlocks, 0);
+
+  tickGame(state, 1 / AUTO_COLLECT_RATE, () => 0.5);
+  assert.equal(state.stats.collectedBlocks, 1);
 });
 
 test("manual ballista hit near a weak spot does triple damage and drops a shower", () => {
@@ -312,6 +401,26 @@ test("occupied slots can be replaced with a newly unlocked tier", () => {
   assert.equal(state.stats.replacedWeapons, 1);
 });
 
+test("replacement preview only requires confirmation for upgraded weapons", () => {
+  const state = createGameState();
+  state.resources.orders = 5000;
+  state.resources.shards = 5000;
+  buildWeapon(state, 0, "stoneThrower");
+
+  const levelOne = getReplacementPreview(state, 0, "ballista");
+  assert.equal(levelOne.requiresConfirmation, false);
+  assert.equal(levelOne.previousWeaponName, "Камнемёт");
+  assert.equal(levelOne.nextWeaponName, "Баллиста");
+
+  upgradeWeapon(state, 0);
+  const upgraded = getReplacementPreview(state, 0, "ballista");
+  assert.equal(upgraded.requiresConfirmation, true);
+  assert.equal(upgraded.previousLevel, 2);
+
+  assert.equal(getReplacementPreview(state, 0, "stoneThrower"), null);
+  assert.equal(getReplacementPreview(state, 1, "ballista"), null);
+});
+
 test("critical weak hit uses weapon crit multiplier without a second quality crit multiplier", () => {
   const siegeCannon = getWeaponType("siegeCannon");
   const criticalQuality = { id: "critical", multiplier: 1 };
@@ -377,6 +486,71 @@ test("siege gate indicator is inactive before the heart and after building the c
   state.resources.shards = 10000;
   buildWeapon(state, 0, "siegeCannon");
   assert.equal(getSiegeGateStatus(state).active, false);
+});
+
+test("current layer progress reports layer-local HP and percentage", () => {
+  const state = createGameState();
+  state.cube.layerIndex = 1;
+  state.cube.layerHp = [
+    0,
+    Math.round(CUBE_LAYERS[1].hp * 0.4),
+    CUBE_LAYERS[2].hp,
+    CUBE_LAYERS[3].hp,
+    CUBE_LAYERS[4].hp
+  ];
+
+  const progress = getCurrentLayerProgress(state);
+
+  assert.equal(progress.layerNumber, 2);
+  assert.equal(progress.totalLayers, CUBE_LAYERS.length);
+  assert.equal(progress.name, CUBE_LAYERS[1].name);
+  assert.equal(progress.remainingHp, Math.round(CUBE_LAYERS[1].hp * 0.4));
+  assert.equal(progress.maxHp, CUBE_LAYERS[1].hp);
+  assert.equal(progress.destroyedPercent, 60);
+  assert.equal(progress.remainingPercent, 40);
+});
+
+test("layer vulnerability summary includes zone names and siege-only requirements", () => {
+  const masonry = getLayerVulnerabilitySummary(1);
+  assert.deepEqual(masonry.zoneNames, ["Средняя зона"]);
+  assert.equal(masonry.requiredWeaponNames.length, 0);
+  assert.equal(masonry.text, "Средняя зона");
+
+  const heart = getLayerVulnerabilitySummary(4);
+  assert.deepEqual(heart.zoneNames, ["Глубокая зона", "Слабые места"]);
+  assert.deepEqual(heart.requiredWeaponNames, ["Осадная пушка"]);
+  assert.equal(heart.text, "Глубокая зона, Слабые места · только Осадная пушка");
+});
+
+test("weapon reach status distinguishes normal, weak-only, and blocked damage", () => {
+  const trebuchet = getWeaponLayerReachStatus(getWeaponType("trebuchet"), 1);
+  assert.equal(trebuchet.kind, "normal");
+  assert.deepEqual(trebuchet.normalZones, ["middle"]);
+  assert.equal(trebuchet.canHitWeakSpot, false);
+
+  const ballista = getWeaponLayerReachStatus(getWeaponType("ballista"), 1);
+  assert.equal(ballista.kind, "weak-only");
+  assert.deepEqual(ballista.normalZones, []);
+  assert.equal(ballista.canHitWeakSpot, true);
+
+  const stoneThrower = getWeaponLayerReachStatus(getWeaponType("stoneThrower"), 1);
+  assert.equal(stoneThrower.kind, "blocked");
+  assert.deepEqual(stoneThrower.normalZones, []);
+  assert.equal(stoneThrower.canHitWeakSpot, false);
+
+  const heartBallista = getWeaponLayerReachStatus(getWeaponType("ballista"), 4);
+  assert.equal(heartBallista.kind, "blocked");
+
+  const heartBombard = getWeaponLayerReachStatus(getWeaponType("bombard"), 4);
+  assert.equal(heartBombard.kind, "blocked");
+
+  const heartCannon = getWeaponLayerReachStatus(getWeaponType("cannon"), 4);
+  assert.equal(heartCannon.kind, "blocked");
+
+  const heartSiegeCannon = getWeaponLayerReachStatus(getWeaponType("siegeCannon"), 4);
+  assert.equal(heartSiegeCannon.kind, "normal");
+  assert.deepEqual(heartSiegeCannon.normalZones, ["deep"]);
+  assert.equal(heartSiegeCannon.canHitWeakSpot, true);
 });
 
 test("v1 saves migrate proportional layer progress and retroactive layer rewards", () => {
@@ -458,6 +632,34 @@ test("v1 saves without modifiers still migrate and receive retroactive rewards",
   assert.equal(state.modifiers.autoCollect, false);
 });
 
+test("v2 saves compact excess visual blocks into the block bank", () => {
+  const legacy = createGameState();
+  legacy.version = 2;
+  delete legacy.blockBank;
+  legacy.blocks = Array.from({ length: 150 }, (_, id) => ({
+    id,
+    x: 0.5,
+    y: 0.76,
+    vx: 0,
+    vy: 0,
+    spin: 0,
+    vSpin: 0,
+    size: 0.02,
+    value: id < 100 ? 2 : 5,
+    resting: true
+  }));
+
+  const state = deserializeGameState(JSON.stringify(legacy));
+
+  assert.equal(state.version, SAVE_VERSION);
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(getBankedBlockCount(state), 54);
+  assert.deepEqual(state.blockBank.buckets, [
+    [2, 4],
+    [5, 50]
+  ]);
+});
+
 test("current-version saves round-trip without duplicate rewards", () => {
   const state = createGameState();
   state.resources.orders = 777;
@@ -471,6 +673,163 @@ test("current-version saves round-trip without duplicate rewards", () => {
   assert.deepEqual(restored.cube.layerHp, state.cube.layerHp);
 });
 
+test("offline progress caps elapsed time and never auto-purchases", () => {
+  const state = createGameState();
+  state.modifiers.orderRate = 2;
+  const ordersBefore = state.resources.orders;
+
+  const recap = simulateOfflineProgress(state, 10 * 60 * 60);
+
+  assert.equal(recap.capped, true);
+  assert.equal(recap.simulatedSeconds, OFFLINE_PROGRESS_CAP_SECONDS);
+  assert.equal(state.time, OFFLINE_PROGRESS_CAP_SECONDS);
+  assert.equal(state.resources.orders, ordersBefore + OFFLINE_PROGRESS_CAP_SECONDS * 2);
+  assert.equal(recap.ordersGained, OFFLINE_PROGRESS_CAP_SECONDS * 2);
+  assert.equal(state.stats.builtWeapons, 0);
+  assert.equal(state.slots.some((slot) => slot.weapon), false);
+});
+
+test("zero offline elapsed is a true no-op", () => {
+  const state = createGameState();
+  state.blocks = [{ id: 99, value: 3 }];
+  const before = serializeGameState(state);
+
+  const recap = simulateOfflineProgress(state, 0);
+
+  assert.equal(serializeGameState(state), before);
+  assert.equal(recap.simulatedSeconds, 0);
+  assert.equal(recap.damageDealt, 0);
+});
+
+test("offline combat respects the siege-only heart gate", () => {
+  const blocked = createGameState();
+  blocked.cube.layerIndex = 4;
+  blocked.cube.layerHp = [0, 0, 0, 0, CUBE_LAYERS[4].hp];
+  blocked.resources.orders = 100000;
+  blocked.resources.shards = 100000;
+  buildWeapon(blocked, 0, "bombard");
+  blocked.slots[0].weapon.cooldown = 0;
+  const blockedHp = blocked.cube.layerHp[4];
+
+  const blockedRecap = simulateOfflineProgress(blocked, 60);
+
+  assert.equal(blocked.cube.layerHp[4], blockedHp);
+  assert.equal(blockedRecap.damageDealt, 0);
+  assert.ok(blocked.stats.blockedShots > 0);
+
+  const siege = createGameState();
+  siege.cube.layerIndex = 4;
+  siege.cube.layerHp = [0, 0, 0, 0, CUBE_LAYERS[4].hp];
+  siege.resources.orders = 100000;
+  siege.resources.shards = 100000;
+  buildWeapon(siege, 0, "siegeCannon");
+  siege.slots[0].weapon.cooldown = 0;
+
+  const siegeRecap = simulateOfflineProgress(siege, 60);
+
+  assert.ok(siege.cube.layerHp[4] < CUBE_LAYERS[4].hp);
+  assert.ok(siegeRecap.damageDealt > 0);
+});
+
+test("offline drops stay banked unless auto collect is unlocked", () => {
+  const unattended = createGameState();
+  unattended.resources.orders = 1000;
+  buildWeapon(unattended, 0, "stoneThrower");
+  unattended.slots[0].weapon.cooldown = 0;
+
+  const unattendedRecap = simulateOfflineProgress(unattended, 120);
+
+  assert.equal(unattended.blocks.length, 0);
+  assert.ok(getBankedBlockCount(unattended) > 0);
+  assert.equal(unattended.resources.shards, 0);
+  assert.equal(unattendedRecap.blocksCollected, 0);
+
+  const automated = createGameState();
+  automated.resources.orders = 1000;
+  automated.modifiers.autoCollect = true;
+  buildWeapon(automated, 0, "stoneThrower");
+  automated.slots[0].weapon.cooldown = 0;
+
+  const automatedRecap = simulateOfflineProgress(automated, 120);
+
+  assert.ok(automated.resources.shards > 0);
+  assert.ok(automatedRecap.blocksCollected > 0);
+});
+
+test("offline layer destruction grants rewards and the new salary rate", () => {
+  const state = createGameState();
+  state.resources.orders = 1000;
+  buildWeapon(state, 0, "stoneThrower");
+  state.slots[0].weapon.cooldown = 0;
+  state.cube.layerHp[0] = 1;
+
+  const recap = simulateOfflineProgress(state, 10);
+
+  assert.equal(state.cube.layerIndex, 1);
+  assert.equal(state.stats.layersDestroyed, 1);
+  assert.equal(state.modifiers.orderRate, LAYER_ORDER_RATE_BONUS[0]);
+  assert.equal(recap.layersDestroyed, 1);
+  assert.ok(recap.ordersGained >= LAYER_REWARDS[0].orders);
+});
+
+test("offline repair modifier preserves condition without spending resources", () => {
+  const neglected = createGameState();
+  neglected.resources.orders = 1000;
+  buildWeapon(neglected, 0, "stoneThrower");
+  neglected.slots[0].weapon.cooldown = 0;
+
+  const maintained = deserializeGameState(serializeGameState(neglected));
+  maintained.modifiers.autoRepair = true;
+
+  simulateOfflineProgress(neglected, 600);
+  simulateOfflineProgress(maintained, 600);
+
+  assert.ok(neglected.slots[0].weapon.condition <= 0.25);
+  assert.ok(maintained.slots[0].weapon.condition > neglected.slots[0].weapon.condition);
+  assert.equal(maintained.resources.orders, neglected.resources.orders);
+  assert.equal(maintained.resources.shards, neglected.resources.shards);
+});
+
+test("offline simulation is deterministic from the persisted RNG state", () => {
+  const left = createGameState();
+  left.resources.orders = 1000;
+  buildWeapon(left, 0, "stoneThrower");
+  left.slots[0].weapon.cooldown = 0;
+  const right = deserializeGameState(serializeGameState(left));
+
+  const leftRecap = simulateOfflineProgress(left, 300);
+  const rightRecap = simulateOfflineProgress(right, 300);
+
+  assert.deepEqual(leftRecap, rightRecap);
+  assert.deepEqual(left.cube.layerHp, right.cube.layerHp);
+  assert.deepEqual(left.stats, right.stats);
+  assert.equal(left.offlineRngState, right.offlineRngState);
+  assert.equal(left.slots[0].weapon.condition, right.slots[0].weapon.condition);
+});
+
+test("v3 saves gain offline fields without retroactive elapsed time", () => {
+  const legacy = createGameState();
+  legacy.version = 3;
+  delete legacy.savedAtMs;
+  delete legacy.offlineRngState;
+
+  const state = deserializeGameState(JSON.stringify(legacy));
+
+  assert.equal(SAVE_VERSION, 4);
+  assert.equal(state.savedAtMs, null);
+  assert.ok(Number.isInteger(state.offlineRngState));
+});
+
 test("invalid saves are rejected", () => {
   assert.throws(() => deserializeGameState("{}"));
+});
+
+test("future-version saves are rejected instead of being downgraded", () => {
+  const future = createGameState();
+  future.version = SAVE_VERSION + 1;
+
+  assert.throws(
+    () => deserializeGameState(JSON.stringify(future)),
+    /newer version/
+  );
 });

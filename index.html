@@ -26,9 +26,13 @@
             <span>Осколки</span>
             <strong id="shardsValue">0</strong>
           </div>
-          <div class="meter wide">
-            <span>Куб</span>
+          <div class="meter wide layer-meter">
+            <span>Текущий слой</span>
             <strong id="hpValue">0</strong>
+            <em id="hpSubvalue" class="meter-subvalue">Куб: 0 HP</em>
+            <div class="layer-hp-bar" aria-hidden="true">
+              <span id="layerHpFill"></span>
+            </div>
           </div>
         </div>
         <div class="top-actions">
@@ -104,6 +108,32 @@
         <p class="victory-copy">Осада завершена. Можно изучить статистику или начать новую кампанию с чистого куба.</p>
         <div id="victoryStats" class="victory-stats"></div>
         <button id="victoryReset" class="primary-button" value="close" type="submit">Играть снова</button>
+      </form>
+    </dialog>
+
+    <dialog id="offlineDialog" class="game-dialog offline-dialog" aria-labelledby="offlineTitle">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="offlineTitle">Лагерь продолжал осаду</h2>
+          <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
+        </header>
+        <div id="offlineStats" class="offline-stats"></div>
+        <p id="offlineCap" class="offline-cap"></p>
+        <button class="primary-button" value="close" type="submit">Вернуться к осаде</button>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="game-dialog confirm-dialog">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="confirmTitle">Подтвердите действие</h2>
+          <button class="icon-button" value="cancel" type="submit" title="Закрыть">×</button>
+        </header>
+        <p id="confirmCopy" class="confirm-copy"></p>
+        <div class="confirm-actions">
+          <button class="plain-button" value="cancel" type="submit">Отмена</button>
+          <button id="confirmAccept" class="primary-button" value="confirm" type="submit">Подтвердить</button>
+        </div>
       </form>
     </dialog>
 

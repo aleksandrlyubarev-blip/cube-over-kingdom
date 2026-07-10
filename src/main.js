@@ -1,34 +1,41 @@
 import {
   CUBE_LAYERS,
+  OFFLINE_PROGRESS_CAP_SECONDS,
   UPGRADE_NODES,
   WEAPON_TYPES,
   ZONES,
   buildWeapon,
   buyUpgradeNode,
-  canWeaponDamageLayer,
   canBuyUpgradeNode,
+  collectBankedBlocks,
   collectBlock,
   createGameState,
   deserializeGameState,
   formatNumber,
   getCurrentLayer,
-  getLayerDamageRule,
+  getCurrentLayerProgress,
+  getBankedBlockCount,
+  getLayerVulnerabilitySummary,
+  getReplacementPreview,
   getRemainingCubeHp,
-  getReachableZonesForWeapon,
   getSiegeGateStatus,
   getUnlockedWeaponTypes,
   getWeaponCost,
+  getWeaponLayerReachStatus,
   getWeaponType,
   manualAimAt,
   repairWeapon,
   replaceWeapon,
   serializeGameState,
+  simulateOfflineProgress,
   tapForOrders,
   tickGame,
   upgradeWeapon
 } from "./gameState.js";
+import { readSave, removeSave, writeSave } from "./persistence.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
+const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
 
 const canvas = document.querySelector("#gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -37,6 +44,8 @@ const ui = {
   ordersValue: document.querySelector("#ordersValue"),
   shardsValue: document.querySelector("#shardsValue"),
   hpValue: document.querySelector("#hpValue"),
+  hpSubvalue: document.querySelector("#hpSubvalue"),
+  layerHpFill: document.querySelector("#layerHpFill"),
   stageLabel: document.querySelector("#stageLabel"),
   slotCount: document.querySelector("#slotCount"),
   slotRow: document.querySelector("#slotRow"),
@@ -64,9 +73,20 @@ const ui = {
   resetButton: document.querySelector("#resetButton"),
   victoryDialog: document.querySelector("#victoryDialog"),
   victoryStats: document.querySelector("#victoryStats"),
-  victoryReset: document.querySelector("#victoryReset")
+  victoryReset: document.querySelector("#victoryReset"),
+  offlineDialog: document.querySelector("#offlineDialog"),
+  offlineStats: document.querySelector("#offlineStats"),
+  offlineCap: document.querySelector("#offlineCap"),
+  confirmDialog: document.querySelector("#confirmDialog"),
+  confirmTitle: document.querySelector("#confirmTitle"),
+  confirmCopy: document.querySelector("#confirmCopy"),
+  confirmAccept: document.querySelector("#confirmAccept")
 };
 
+const getStorage = () => window.localStorage;
+let persistenceStatus = { writeEnabled: true, message: null };
+let initialOfflineRecap = null;
+let shouldPersistLoadedState = false;
 let state = loadGame();
 let cameraOffset = 0;
 let manualMode = false;
@@ -76,17 +96,42 @@ let autosaveAccumulator = 0;
 let toastTimer = 0;
 let dragStart = null;
 let victoryShown = false;
+let autosaveBackoff = 0;
+let pendingConfirmation = null;
+let sessionSuspended = document.visibilityState === "hidden";
 
+if (shouldPersistLoadedState) {
+  saveGame();
+}
 resizeCanvas();
 renderUi();
+showOfflineRecap(initialOfflineRecap);
 requestAnimationFrame(loop);
 
 window.addEventListener("resize", resizeCanvas);
+window.addEventListener("focus", resumeSession);
+window.addEventListener("pagehide", suspendSession);
+window.addEventListener("pageshow", resumeSession);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    suspendSession();
+    return;
+  }
+  resumeSession();
+});
 
 ui.buildButton.addEventListener("click", () => {
-  const slot = state.slots[state.selectedSlot];
-  const result = slot?.weapon ? replaceWeapon(state) : buildWeapon(state);
-  reportResult(result, slot?.weapon ? "Орудие заменено" : "Орудие построено");
+  const preview = getReplacementPreview(state);
+  if (preview?.requiresConfirmation) {
+    requestConfirmation({
+      title: "Заменить улучшенное орудие?",
+      copy: `${preview.previousWeaponName} ур.${preview.previousLevel} будет разобран без возврата ресурсов. Построить: ${preview.nextWeaponName}?`,
+      confirmLabel: "Заменить",
+      action: buildOrReplaceSelected
+    });
+    return;
+  }
+  buildOrReplaceSelected();
 });
 
 ui.upgradeButton.addEventListener("click", () => {
@@ -124,18 +169,31 @@ ui.cameraDown.addEventListener("click", () => setCamera(cameraOffset - 0.12));
 ui.cameraHome.addEventListener("click", () => setCamera(0));
 
 ui.saveButton.addEventListener("click", () => {
-  saveGame();
-  showToast("Осада сохранена");
+  const result = saveGame();
+  showToast(result.ok ? "Осада сохранена" : describeStorageFailure(result.reason));
 });
 
 ui.resetButton.addEventListener("click", () => {
-  resetGame();
+  requestConfirmation({
+    title: "Начать новую осаду?",
+    copy: "Текущий прогресс будет удалён. Это действие нельзя отменить.",
+    confirmLabel: "Начать заново",
+    action: resetGame
+  });
 });
 
 ui.victoryReset.addEventListener("click", (event) => {
   event.preventDefault();
   ui.victoryDialog.close();
   resetGame();
+});
+
+ui.offlineDialog.addEventListener("close", maybeShowVictory);
+
+ui.confirmDialog.addEventListener("close", () => {
+  const action = ui.confirmDialog.returnValue === "confirm" ? pendingConfirmation : null;
+  pendingConfirmation = null;
+  action?.();
 });
 
 canvas.addEventListener("pointerdown", (event) => {
@@ -176,6 +234,12 @@ canvas.addEventListener(
 );
 
 function loop(now) {
+  if (sessionSuspended) {
+    lastFrame = now;
+    requestAnimationFrame(loop);
+    return;
+  }
+
   const dt = Math.min(0.08, (now - lastFrame) / 1000);
   lastFrame = now;
   tickGame(state, dt);
@@ -183,12 +247,16 @@ function loop(now) {
 
   uiAccumulator += dt;
   autosaveAccumulator += dt;
+  autosaveBackoff = Math.max(0, autosaveBackoff - dt);
   if (uiAccumulator > 0.16) {
     renderUi();
     uiAccumulator = 0;
   }
-  if (autosaveAccumulator > 5) {
-    saveGame();
+  if (autosaveAccumulator > 5 && autosaveBackoff <= 0) {
+    const saveResult = saveGame();
+    if (!saveResult.ok) {
+      autosaveBackoff = 60;
+    }
     autosaveAccumulator = 0;
   }
   if (toastTimer > 0) {
@@ -197,10 +265,7 @@ function loop(now) {
       ui.toast.classList.add("hidden");
     }
   }
-  if (state.won && !victoryShown) {
-    victoryShown = true;
-    showVictory();
-  }
+  maybeShowVictory();
 
   requestAnimationFrame(loop);
 }
@@ -287,6 +352,7 @@ function drawCube(width, height, metrics) {
   }
 
   drawLayerVeins(metrics);
+  drawLayerVulnerabilityBands(metrics);
   drawDamageMarks(metrics);
   drawWeakSpot(metrics);
   drawZoneBands(metrics);
@@ -375,8 +441,32 @@ function drawWeakSpot(metrics) {
   ctx.stroke();
 }
 
+function drawLayerVulnerabilityBands(metrics) {
+  const summary = getLayerVulnerabilitySummary(state.cube.layerIndex);
+  const { cubeLeft, cubeRight, cubeBottom, cubeWorldHeight } = metrics;
+  const cubeWidth = cubeRight - cubeLeft;
+  for (const zoneId of summary.zones) {
+    if (zoneId === "weak") {
+      continue;
+    }
+    const zone = ZONES[zoneId];
+    const y1 = cubeBottom - (zone.to - cameraOffset) * cubeWorldHeight;
+    const y2 = cubeBottom - (zone.from - cameraOffset) * cubeWorldHeight;
+    if (y2 < 0 || y1 > canvas.height * 0.74) {
+      continue;
+    }
+    ctx.fillStyle = "rgba(142, 207, 116, 0.08)";
+    ctx.fillRect(cubeLeft, y1, cubeWidth, y2 - y1);
+    ctx.strokeStyle = "rgba(142, 207, 116, 0.24)";
+    ctx.setLineDash([8 * devicePixelRatio, 6 * devicePixelRatio]);
+    ctx.lineWidth = 1 * devicePixelRatio;
+    ctx.strokeRect(cubeLeft + 7, y1 + 7, cubeWidth - 14, y2 - y1 - 14);
+    ctx.setLineDash([]);
+  }
+}
+
 function drawZoneBands(metrics) {
-  const selected = getWeaponType(state.selectedWeaponType);
+  const selected = getInspectedWeaponType();
   const { cubeLeft, cubeRight, cubeBottom, cubeWorldHeight } = metrics;
   const cubeWidth = cubeRight - cubeLeft;
   for (const zoneId of selected.zones) {
@@ -534,6 +624,32 @@ function drawBlocks(width, height) {
     ctx.strokeRect(-size / 2, -size / 2, size, size);
     ctx.restore();
   }
+  drawBankedBlockPile(width, height);
+}
+
+function drawBankedBlockPile(width, height) {
+  const count = getBankedBlockCount(state);
+  if (count <= 0) {
+    return;
+  }
+  const x = BLOCK_PILE_POSITION.x * width;
+  const y = BLOCK_PILE_POSITION.y * height;
+  const size = Math.max(13, Math.min(width, height) * 0.022);
+  ctx.save();
+  ctx.fillStyle = "#aaa79d";
+  ctx.strokeStyle = "#4f493f";
+  ctx.lineWidth = 2 * devicePixelRatio;
+  for (let index = 0; index < 4; index += 1) {
+    const offsetX = (index - 1.5) * size * 0.55;
+    const offsetY = (index % 2) * -size * 0.5;
+    ctx.fillRect(x + offsetX - size / 2, y + offsetY - size / 2, size, size);
+    ctx.strokeRect(x + offsetX - size / 2, y + offsetY - size / 2, size, size);
+  }
+  ctx.fillStyle = "#fff1c7";
+  ctx.font = `${12 * devicePixelRatio}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.fillText(`Куча ${formatNumber(count)}`, x, y - size * 1.5);
+  ctx.restore();
 }
 
 function drawFloatingTexts(width, height, metrics) {
@@ -561,18 +677,24 @@ function drawFloatingTexts(width, height, metrics) {
 function renderUi() {
   const remainingHp = getRemainingCubeHp(state);
   const currentLayer = getCurrentLayer(state);
+  const layerProgress = getCurrentLayerProgress(state);
   ui.ordersValue.textContent = formatNumber(state.resources.orders);
   ui.shardsValue.textContent = formatNumber(state.resources.shards);
-  ui.hpValue.textContent = `${formatNumber(remainingHp)} HP`;
+  ui.hpValue.textContent = state.won
+    ? "100% разрушено"
+    : `${formatNumber(layerProgress.remainingHp)} / ${formatNumber(layerProgress.maxHp)} HP`;
+  ui.hpSubvalue.textContent = `Слой ${layerProgress.layerNumber}/${layerProgress.totalLayers} · ${layerProgress.destroyedPercent}% · Куб ${formatNumber(remainingHp)} HP`;
+  ui.layerHpFill.style.width = `${layerProgress.destroyedPercent}%`;
   const siegeGate = getSiegeGateStatus(state);
+  const layerPrefix = `Слой ${layerProgress.layerNumber}/${layerProgress.totalLayers}`;
   if (state.won) {
     ui.stageLabel.textContent = "Куб разрушен · начните новую осаду";
   } else if (siegeGate.active) {
     ui.stageLabel.textContent = siegeGate.affordable
-      ? `${currentLayer.name} · ${siegeGate.weaponName} доступна!`
-      : `${currentLayer.name} · нужна ${siegeGate.weaponName}: ещё ${describeMissing(siegeGate)}`;
+      ? `${layerPrefix} · ${currentLayer.name} · ${siegeGate.weaponName} доступна!`
+      : `${layerPrefix} · ${currentLayer.name} · нужна ${siegeGate.weaponName}: ещё ${describeMissing(siegeGate)}`;
   } else {
-    ui.stageLabel.textContent = currentLayer.name;
+    ui.stageLabel.textContent = `${layerPrefix} · ${currentLayer.name}`;
   }
   ui.slotCount.textContent = `${state.unlockedSlots}/8`;
   ui.selectedWeaponName.textContent = getWeaponType(state.selectedWeaponType).name;
@@ -676,27 +798,27 @@ function renderActionPanel() {
 function renderZoneLine() {
   if (state.won || state.cube.layerIndex >= CUBE_LAYERS.length) {
     ui.zoneLine.textContent = "Куб разрушен";
-    ui.zoneLine.classList.remove("warning");
+    ui.zoneLine.classList.remove("warning", "weak-only");
     return;
   }
   const slotWeapon = state.slots[state.selectedSlot]?.weapon;
-  const type = slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
+  const type = getInspectedWeaponType();
   const source = slotWeapon ? "В слоте" : "К постройке";
   const layerIndex = state.cube.layerIndex;
-  const rule = getLayerDamageRule(layerIndex);
-  const reaches =
-    canWeaponDamageLayer(type, layerIndex) ||
-    canWeaponDamageLayer(type, layerIndex, { hitWeakSpot: true });
+  const vulnerability = getLayerVulnerabilitySummary(layerIndex);
+  const reach = getWeaponLayerReachStatus(type, layerIndex);
   const weaponZones = describeWeaponZones(type);
-  const layerZones = describeLayerRule(rule);
-  const overlap = getReachableZonesForWeapon(type, layerIndex);
+  const layerText = `Слой уязвим: ${vulnerability.text}`;
 
-  ui.zoneLine.classList.toggle("warning", !reaches);
-  if (reaches) {
-    const overlapText = overlap.length > 0 ? ` · достаёт: ${overlap.map(formatZoneName).join(", ")}` : "";
-    ui.zoneLine.textContent = `${source}: ${type.name} · ${weaponZones}${overlapText}`;
+  ui.zoneLine.classList.toggle("warning", reach.kind === "blocked");
+  ui.zoneLine.classList.toggle("weak-only", reach.kind === "weak-only");
+  if (reach.kind === "normal") {
+    const overlapText = ` · достаёт: ${reach.normalZones.map(formatZoneName).join(", ")}`;
+    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
+  } else if (reach.kind === "weak-only") {
+    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} наносит урон только по слабому месту; обычные выстрелы вне зоны.`;
   } else {
-    ui.zoneLine.textContent = `${source}: ${type.name} не достаёт до слоя. Нужны: ${layerZones}`;
+    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} не достаёт до слоя.`;
   }
 }
 
@@ -707,6 +829,9 @@ function renderHintPanel() {
 }
 
 function getContextHint() {
+  if (persistenceStatus.message) {
+    return persistenceStatus.message;
+  }
   if (state.won) {
     return "Куб пал. Начните новую осаду, чтобы проверить другой билд.";
   }
@@ -717,14 +842,27 @@ function getContextHint() {
     }
     return "Первый камнемёт готов к строительству: выберите свободную площадку.";
   }
-  if (state.stats.collectedBlocks === 0 && state.blocks.some((block) => block.resting)) {
+  if (
+    state.stats.collectedBlocks === 0 &&
+    (state.blocks.some((block) => block.resting) || getBankedBlockCount(state) > 0)
+  ) {
     return "На поле лежат блоки куба: соберите их для первых осколков.";
   }
-  const selectedType = getWeaponType(state.selectedWeaponType);
-  if (state.stats.blockedShots > 0 && !canWeaponDamageLayer(selectedType, state.cube.layerIndex)) {
-    return "Если урон остановился, выберите орудие с зоной текущего слоя.";
+  const inspectedType = getInspectedWeaponType();
+  const reach = getWeaponLayerReachStatus(inspectedType, state.cube.layerIndex);
+  if (state.stats.blockedShots > 0 && reach.kind === "weak-only") {
+    const requiredZones = getLayerVulnerabilitySummary(state.cube.layerIndex).zoneNames.join(" или ").toLowerCase();
+    return `${inspectedType.name} пробивает слой только через слабое место. Для постоянного урона установите орудие, которое достаёт до зоны: ${requiredZones}.`;
+  }
+  if (state.stats.blockedShots > 0 && reach.kind === "blocked") {
+    return `Если урон остановился: текущий слой уязвим (${getLayerVulnerabilitySummary(state.cube.layerIndex).text}).`;
   }
   return null;
+}
+
+function getInspectedWeaponType() {
+  const slotWeapon = state.slots[state.selectedSlot]?.weapon;
+  return slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
 }
 
 function renderLabyrinth() {
@@ -768,6 +906,13 @@ function handleCanvasTap(event) {
     return;
   }
 
+  if (isBankedBlockPileAt(px, py)) {
+    const result = collectBankedBlocks(state);
+    showToast(`Собрано из кучи: ${formatNumber(result.gained)} осколков`);
+    renderUi();
+    return;
+  }
+
   if (manualMode) {
     const world = screenToCube(px, py, getSceneMetrics(canvas.width, canvas.height));
     const result = manualAimAt(state, world.x, world.y, state.selectedSlot);
@@ -779,6 +924,10 @@ function handleCanvasTap(event) {
 
   tapForOrders(state);
   renderUi();
+}
+
+function isBankedBlockPileAt(px, py) {
+  return getBankedBlockCount(state) > 0 && Math.hypot(px - BLOCK_PILE_POSITION.x, py - BLOCK_PILE_POSITION.y) < 0.075;
 }
 
 function findBlockAt(px, py) {
@@ -824,7 +973,7 @@ function reportResult(result, okMessage) {
     locked: "Орудие ещё не открыто",
     cost: "Не хватает ресурсов",
     prerequisite: "Сначала разрушьте нужный слой куба",
-    range: "Орудие не достаёт до текущей зоны",
+    range: `Орудие не достаёт. Слой уязвим: ${getLayerVulnerabilitySummary(state.cube.layerIndex).text}`,
     cooldown: "Орудие перезаряжается",
     level: "Уровень уже максимальный",
     healthy: "Орудие исправно",
@@ -832,6 +981,22 @@ function reportResult(result, okMessage) {
     node: "Узел уже куплен"
   };
   showToast(messages[result.reason] ?? "Действие недоступно");
+}
+
+function buildOrReplaceSelected() {
+  const slot = state.slots[state.selectedSlot];
+  const wasOccupied = Boolean(slot?.weapon);
+  const result = wasOccupied ? replaceWeapon(state) : buildWeapon(state);
+  reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено");
+}
+
+function requestConfirmation({ title, copy, confirmLabel, action }) {
+  pendingConfirmation = action;
+  ui.confirmDialog.returnValue = "";
+  ui.confirmTitle.textContent = title;
+  ui.confirmCopy.textContent = copy;
+  ui.confirmAccept.textContent = confirmLabel;
+  ui.confirmDialog.showModal();
 }
 
 function showToast(text) {
@@ -857,6 +1022,68 @@ function showVictory() {
   saveGame();
 }
 
+function maybeShowVictory() {
+  if (!state.won || victoryShown || ui.offlineDialog.open) {
+    return;
+  }
+  victoryShown = true;
+  showVictory();
+}
+
+function showOfflineRecap(recap) {
+  if (!isNotableOfflineRecap(recap)) {
+    return;
+  }
+
+  const layers = recap.layersDestroyed > 0
+    ? `${recap.layersDestroyed}: ${recap.destroyedLayerNames.join(", ")}`
+    : "0";
+  ui.offlineStats.replaceChildren(
+    statPill("Вне лагеря", formatDuration(recap.requestedSeconds)),
+    statPill("Зачтено", formatDuration(recap.simulatedSeconds)),
+    statPill("Урон", formatNumber(recap.damageDealt)),
+    statPill("Разрушено слоёв", layers),
+    statPill("Приказы", `+${formatNumber(recap.ordersGained)}`),
+    statPill("Осколки", `+${formatNumber(recap.shardsGained)}`),
+    statPill("Блоки собраны", formatNumber(recap.blocksCollected)),
+    statPill("Блоки остались", formatNumber(recap.bankedBlocks))
+  );
+  const capText = `Лимит автономного прогресса: ${formatDuration(OFFLINE_PROGRESS_CAP_SECONDS)}.`;
+  ui.offlineCap.textContent = recap.capped ? `Лимит применён. ${capText}` : capText;
+  ui.offlineCap.classList.toggle("capped", recap.capped);
+  if (!ui.offlineDialog.open) {
+    ui.offlineDialog.showModal();
+  }
+}
+
+function isNotableOfflineRecap(recap) {
+  return Boolean(
+    recap &&
+      recap.requestedSeconds >= 5 &&
+      (recap.damageDealt >= 1 ||
+        recap.layersDestroyed > 0 ||
+        recap.ordersGained >= 1 ||
+        recap.shardsGained >= 1 ||
+        recap.blocksCollected > 0 ||
+        recap.blocksSpawned > 0)
+  );
+}
+
+function formatDuration(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return minutes > 0 ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+  }
+  if (minutes > 0) {
+    return remainingSeconds > 0 ? `${minutes} мин ${remainingSeconds} с` : `${minutes} мин`;
+  }
+  return `${remainingSeconds} с`;
+}
+
 function statPill(label, value) {
   const node = document.createElement("div");
   node.className = "stat-pill";
@@ -865,30 +1092,106 @@ function statPill(label, value) {
 }
 
 function saveGame() {
-  localStorage.setItem(SAVE_KEY, serializeGameState(state));
+  if (!persistenceStatus.writeEnabled) {
+    return { ok: false, reason: "protected" };
+  }
+  state.savedAtMs = Date.now();
+  let serialized;
+  try {
+    serialized = serializeGameState(state);
+  } catch {
+    persistenceStatus.message = "Не удалось подготовить сохранение. Игра продолжает работать без автосейва.";
+    return { ok: false, reason: "serialize" };
+  }
+  const result = writeSave(getStorage, SAVE_KEY, serialized);
+  if (result.ok) {
+    persistenceStatus.message = null;
+  } else {
+    persistenceStatus.message = describeStorageFailure(result.reason);
+  }
+  return result;
 }
 
 function loadGame() {
-  const saved = localStorage.getItem(SAVE_KEY);
-  if (!saved) {
+  const saved = readSave(getStorage, SAVE_KEY);
+  if (!saved.ok && saved.reason === "not-found") {
+    return createGameState();
+  }
+  if (!saved.ok) {
+    persistenceStatus.message = describeStorageFailure(saved.reason);
     return createGameState();
   }
   try {
-    return deserializeGameState(saved);
-  } catch {
-    localStorage.removeItem(SAVE_KEY);
+    const loadedState = deserializeGameState(saved.value);
+    initialOfflineRecap = applyOfflineCatchUp(loadedState, Date.now());
+    shouldPersistLoadedState = true;
+    return loadedState;
+  } catch (error) {
+    persistenceStatus.writeEnabled = false;
+    persistenceStatus.message = String(error?.message).includes("newer version")
+      ? "Сейв создан более новой версией игры и сохранён без изменений. Начните новую осаду, чтобы заменить его."
+      : "Сейв повреждён и сохранён без изменений. Начните новую осаду, чтобы заменить его.";
     return createGameState();
   }
 }
 
+function applyOfflineCatchUp(targetState, nowMs) {
+  const savedAtMs = targetState.savedAtMs;
+  if (!Number.isFinite(savedAtMs)) {
+    targetState.savedAtMs = nowMs;
+    return null;
+  }
+
+  const elapsedSeconds = (nowMs - savedAtMs) / 1000;
+  const recap = simulateOfflineProgress(targetState, elapsedSeconds);
+  targetState.savedAtMs = nowMs;
+  return recap;
+}
+
+function suspendSession() {
+  sessionSuspended = true;
+  saveGame();
+}
+
+function resumeSession() {
+  if (!sessionSuspended || document.visibilityState === "hidden") {
+    return;
+  }
+
+  sessionSuspended = false;
+  const recap = applyOfflineCatchUp(state, Date.now());
+  saveGame();
+  renderUi();
+  showOfflineRecap(recap);
+  lastFrame = performance.now();
+}
+
 function resetGame() {
-  localStorage.removeItem(SAVE_KEY);
+  const removed = removeSave(getStorage, SAVE_KEY);
+  persistenceStatus = {
+    writeEnabled: removed.ok,
+    message: removed.ok ? null : describeStorageFailure(removed.reason)
+  };
   state = createGameState();
   cameraOffset = 0;
   manualMode = false;
   victoryShown = false;
+  autosaveBackoff = removed.ok ? 0 : 60;
+  if (removed.ok) {
+    saveGame();
+  }
   renderUi();
   showToast("Новая осада началась");
+}
+
+function describeStorageFailure(reason) {
+  const messages = {
+    quota: "Хранилище заполнено. Игра продолжает работать, но прогресс пока не сохраняется.",
+    unavailable: "Хранилище браузера недоступно. Игра продолжает работать без сохранения.",
+    protected: "Старый сейв защищён от перезаписи. Начните новую осаду, чтобы заменить его.",
+    serialize: "Не удалось подготовить сохранение."
+  };
+  return messages[reason] ?? "Не удалось сохранить прогресс.";
 }
 
 function resizeCanvas() {
@@ -952,13 +1255,6 @@ function describeWeaponZones(type) {
     zones.push("слабые места");
   }
   return zones.join(", ") || "нет зоны";
-}
-
-function describeLayerRule(rule) {
-  if (rule.weaponTypes?.length) {
-    return rule.weaponTypes.map((typeId) => getWeaponType(typeId).name).join(", ");
-  }
-  return rule.zones.map(formatZoneName).join(", ");
 }
 
 function formatZoneName(zoneId) {
