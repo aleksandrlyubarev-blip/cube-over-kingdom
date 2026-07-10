@@ -111,6 +111,18 @@
       </form>
     </dialog>
 
+    <dialog id="offlineDialog" class="game-dialog offline-dialog" aria-labelledby="offlineTitle">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="offlineTitle">Лагерь продолжал осаду</h2>
+          <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
+        </header>
+        <div id="offlineStats" class="offline-stats"></div>
+        <p id="offlineCap" class="offline-cap"></p>
+        <button class="primary-button" value="close" type="submit">Вернуться к осаде</button>
+      </form>
+    </dialog>
+
     <dialog id="confirmDialog" class="game-dialog confirm-dialog">
       <form method="dialog" class="dialog-shell">
         <header class="dialog-header">

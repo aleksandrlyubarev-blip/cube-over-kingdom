@@ -1,5 +1,6 @@
 import {
   CUBE_LAYERS,
+  OFFLINE_PROGRESS_CAP_SECONDS,
   UPGRADE_NODES,
   WEAPON_TYPES,
   ZONES,
@@ -26,6 +27,7 @@ import {
   repairWeapon,
   replaceWeapon,
   serializeGameState,
+  simulateOfflineProgress,
   tapForOrders,
   tickGame,
   upgradeWeapon
@@ -72,6 +74,9 @@ const ui = {
   victoryDialog: document.querySelector("#victoryDialog"),
   victoryStats: document.querySelector("#victoryStats"),
   victoryReset: document.querySelector("#victoryReset"),
+  offlineDialog: document.querySelector("#offlineDialog"),
+  offlineStats: document.querySelector("#offlineStats"),
+  offlineCap: document.querySelector("#offlineCap"),
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
   confirmCopy: document.querySelector("#confirmCopy"),
@@ -80,6 +85,8 @@ const ui = {
 
 const getStorage = () => window.localStorage;
 let persistenceStatus = { writeEnabled: true, message: null };
+let initialOfflineRecap = null;
+let shouldPersistLoadedState = false;
 let state = loadGame();
 let cameraOffset = 0;
 let manualMode = false;
@@ -91,12 +98,27 @@ let dragStart = null;
 let victoryShown = false;
 let autosaveBackoff = 0;
 let pendingConfirmation = null;
+let sessionSuspended = document.visibilityState === "hidden";
 
+if (shouldPersistLoadedState) {
+  saveGame();
+}
 resizeCanvas();
 renderUi();
+showOfflineRecap(initialOfflineRecap);
 requestAnimationFrame(loop);
 
 window.addEventListener("resize", resizeCanvas);
+window.addEventListener("focus", resumeSession);
+window.addEventListener("pagehide", suspendSession);
+window.addEventListener("pageshow", resumeSession);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    suspendSession();
+    return;
+  }
+  resumeSession();
+});
 
 ui.buildButton.addEventListener("click", () => {
   const preview = getReplacementPreview(state);
@@ -166,6 +188,8 @@ ui.victoryReset.addEventListener("click", (event) => {
   resetGame();
 });
 
+ui.offlineDialog.addEventListener("close", maybeShowVictory);
+
 ui.confirmDialog.addEventListener("close", () => {
   const action = ui.confirmDialog.returnValue === "confirm" ? pendingConfirmation : null;
   pendingConfirmation = null;
@@ -210,6 +234,12 @@ canvas.addEventListener(
 );
 
 function loop(now) {
+  if (sessionSuspended) {
+    lastFrame = now;
+    requestAnimationFrame(loop);
+    return;
+  }
+
   const dt = Math.min(0.08, (now - lastFrame) / 1000);
   lastFrame = now;
   tickGame(state, dt);
@@ -235,10 +265,7 @@ function loop(now) {
       ui.toast.classList.add("hidden");
     }
   }
-  if (state.won && !victoryShown) {
-    victoryShown = true;
-    showVictory();
-  }
+  maybeShowVictory();
 
   requestAnimationFrame(loop);
 }
@@ -995,6 +1022,68 @@ function showVictory() {
   saveGame();
 }
 
+function maybeShowVictory() {
+  if (!state.won || victoryShown || ui.offlineDialog.open) {
+    return;
+  }
+  victoryShown = true;
+  showVictory();
+}
+
+function showOfflineRecap(recap) {
+  if (!isNotableOfflineRecap(recap)) {
+    return;
+  }
+
+  const layers = recap.layersDestroyed > 0
+    ? `${recap.layersDestroyed}: ${recap.destroyedLayerNames.join(", ")}`
+    : "0";
+  ui.offlineStats.replaceChildren(
+    statPill("Вне лагеря", formatDuration(recap.requestedSeconds)),
+    statPill("Зачтено", formatDuration(recap.simulatedSeconds)),
+    statPill("Урон", formatNumber(recap.damageDealt)),
+    statPill("Разрушено слоёв", layers),
+    statPill("Приказы", `+${formatNumber(recap.ordersGained)}`),
+    statPill("Осколки", `+${formatNumber(recap.shardsGained)}`),
+    statPill("Блоки собраны", formatNumber(recap.blocksCollected)),
+    statPill("Блоки остались", formatNumber(recap.bankedBlocks))
+  );
+  const capText = `Лимит автономного прогресса: ${formatDuration(OFFLINE_PROGRESS_CAP_SECONDS)}.`;
+  ui.offlineCap.textContent = recap.capped ? `Лимит применён. ${capText}` : capText;
+  ui.offlineCap.classList.toggle("capped", recap.capped);
+  if (!ui.offlineDialog.open) {
+    ui.offlineDialog.showModal();
+  }
+}
+
+function isNotableOfflineRecap(recap) {
+  return Boolean(
+    recap &&
+      recap.requestedSeconds >= 5 &&
+      (recap.damageDealt >= 1 ||
+        recap.layersDestroyed > 0 ||
+        recap.ordersGained >= 1 ||
+        recap.shardsGained >= 1 ||
+        recap.blocksCollected > 0 ||
+        recap.blocksSpawned > 0)
+  );
+}
+
+function formatDuration(seconds) {
+  const totalSeconds = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const remainingSeconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return minutes > 0 ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+  }
+  if (minutes > 0) {
+    return remainingSeconds > 0 ? `${minutes} мин ${remainingSeconds} с` : `${minutes} мин`;
+  }
+  return `${remainingSeconds} с`;
+}
+
 function statPill(label, value) {
   const node = document.createElement("div");
   node.className = "stat-pill";
@@ -1006,6 +1095,7 @@ function saveGame() {
   if (!persistenceStatus.writeEnabled) {
     return { ok: false, reason: "protected" };
   }
+  state.savedAtMs = Date.now();
   let serialized;
   try {
     serialized = serializeGameState(state);
@@ -1032,7 +1122,10 @@ function loadGame() {
     return createGameState();
   }
   try {
-    return deserializeGameState(saved.value);
+    const loadedState = deserializeGameState(saved.value);
+    initialOfflineRecap = applyOfflineCatchUp(loadedState, Date.now());
+    shouldPersistLoadedState = true;
+    return loadedState;
   } catch (error) {
     persistenceStatus.writeEnabled = false;
     persistenceStatus.message = String(error?.message).includes("newer version")
@@ -1040,6 +1133,37 @@ function loadGame() {
       : "Сейв повреждён и сохранён без изменений. Начните новую осаду, чтобы заменить его.";
     return createGameState();
   }
+}
+
+function applyOfflineCatchUp(targetState, nowMs) {
+  const savedAtMs = targetState.savedAtMs;
+  if (!Number.isFinite(savedAtMs)) {
+    targetState.savedAtMs = nowMs;
+    return null;
+  }
+
+  const elapsedSeconds = (nowMs - savedAtMs) / 1000;
+  const recap = simulateOfflineProgress(targetState, elapsedSeconds);
+  targetState.savedAtMs = nowMs;
+  return recap;
+}
+
+function suspendSession() {
+  sessionSuspended = true;
+  saveGame();
+}
+
+function resumeSession() {
+  if (!sessionSuspended || document.visibilityState === "hidden") {
+    return;
+  }
+
+  sessionSuspended = false;
+  const recap = applyOfflineCatchUp(state, Date.now());
+  saveGame();
+  renderUi();
+  showOfflineRecap(recap);
+  lastFrame = performance.now();
 }
 
 function resetGame() {

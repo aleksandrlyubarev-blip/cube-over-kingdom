@@ -54,6 +54,8 @@ button:disabled {
   display: grid;
   grid-template-rows: 64px minmax(280px, 1fr) 352px;
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   height: 100dvh;
   min-height: 620px;
   background: #171411;
@@ -74,6 +76,10 @@ button:disabled {
   align-items: center;
   min-width: 0;
   gap: 10px;
+}
+
+.brand > div {
+  min-width: 0;
 }
 
 .brand-mark {
@@ -105,8 +111,10 @@ h1 {
 
 .brand p {
   margin-top: 3px;
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -525,7 +533,9 @@ h1 {
 
 .game-dialog {
   width: min(920px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
   max-height: min(680px, calc(100dvh - 28px));
+  overflow-x: hidden;
   padding: 0;
   border: 1px solid #6c543a;
   border-radius: 8px;
@@ -538,6 +548,7 @@ h1 {
 }
 
 .dialog-shell {
+  max-width: 100%;
   margin: 0;
 }
 
@@ -603,11 +614,13 @@ h1 {
   font-weight: 750;
 }
 
-.victory-dialog {
+.victory-dialog,
+.offline-dialog {
   width: min(540px, calc(100vw - 28px));
 }
 
-.victory-stats {
+.victory-stats,
+.offline-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
@@ -622,6 +635,7 @@ h1 {
 }
 
 .stat-pill {
+  min-width: 0;
   padding: 10px;
   border: 1px solid #55432f;
   border-radius: 8px;
@@ -638,11 +652,24 @@ h1 {
   display: block;
   margin-top: 4px;
   font-size: 17px;
+  overflow-wrap: anywhere;
 }
 
-.victory-dialog .primary-button {
+.victory-dialog .primary-button,
+.offline-dialog .primary-button {
   width: calc(100% - 28px);
   margin: 0 14px 14px;
+}
+
+.offline-cap {
+  margin: 0 14px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.offline-cap.capped {
+  color: var(--gold-2);
 }
 
 .confirm-dialog {
@@ -763,7 +790,8 @@ h1 {
 @media (max-width: 640px) {
   html,
   body {
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .game-shell {
@@ -776,6 +804,8 @@ h1 {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
     gap: 8px;
+    width: 100%;
+    min-width: 0;
   }
 
   .brand {
@@ -832,6 +862,7 @@ h1 {
 
   .camera-panel {
     grid-template-columns: 30px 110px 30px;
+    max-width: calc(100% - 24px);
   }
 
   .camera-panel .pill-button {
@@ -846,5 +877,14 @@ h1 {
 
   .arsenal-card {
     grid-column: auto;
+  }
+
+  .confirm-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .confirm-actions button {
+    min-width: 0;
   }
 }
