@@ -7,7 +7,9 @@ import {
   LEGACY_V1_LAYER_HP,
   SAVE_VERSION,
   deserializeGameState,
+  getCurrentLayerProgress,
   getSiegeGateStatus,
+  getLayerVulnerabilitySummary,
   serializeGameState,
   buildWeapon,
   buyUpgradeNode,
@@ -377,6 +379,40 @@ test("siege gate indicator is inactive before the heart and after building the c
   state.resources.shards = 10000;
   buildWeapon(state, 0, "siegeCannon");
   assert.equal(getSiegeGateStatus(state).active, false);
+});
+
+test("current layer progress reports layer-local HP and percentage", () => {
+  const state = createGameState();
+  state.cube.layerIndex = 1;
+  state.cube.layerHp = [
+    0,
+    Math.round(CUBE_LAYERS[1].hp * 0.4),
+    CUBE_LAYERS[2].hp,
+    CUBE_LAYERS[3].hp,
+    CUBE_LAYERS[4].hp
+  ];
+
+  const progress = getCurrentLayerProgress(state);
+
+  assert.equal(progress.layerNumber, 2);
+  assert.equal(progress.totalLayers, CUBE_LAYERS.length);
+  assert.equal(progress.name, CUBE_LAYERS[1].name);
+  assert.equal(progress.remainingHp, Math.round(CUBE_LAYERS[1].hp * 0.4));
+  assert.equal(progress.maxHp, CUBE_LAYERS[1].hp);
+  assert.equal(progress.destroyedPercent, 60);
+  assert.equal(progress.remainingPercent, 40);
+});
+
+test("layer vulnerability summary includes zone names and siege-only requirements", () => {
+  const masonry = getLayerVulnerabilitySummary(1);
+  assert.deepEqual(masonry.zoneNames, ["Средняя зона"]);
+  assert.equal(masonry.requiredWeaponNames.length, 0);
+  assert.equal(masonry.text, "Средняя зона");
+
+  const heart = getLayerVulnerabilitySummary(4);
+  assert.deepEqual(heart.zoneNames, ["Глубокая зона", "Слабые места"]);
+  assert.deepEqual(heart.requiredWeaponNames, ["Осадная пушка"]);
+  assert.equal(heart.text, "Глубокая зона, Слабые места · только Осадная пушка");
 });
 
 test("v1 saves migrate proportional layer progress and retroactive layer rewards", () => {

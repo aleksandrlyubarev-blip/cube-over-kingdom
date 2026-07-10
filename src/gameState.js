@@ -303,6 +303,28 @@ export function getRemainingCubeHp(state) {
   return state.cube.layerHp.reduce((sum, hp) => sum + Math.max(0, hp), 0);
 }
 
+export function getCurrentLayerProgress(state) {
+  const totalLayers = CUBE_LAYERS.length;
+  const isComplete = state.won || state.cube.layerIndex >= totalLayers;
+  const layerIndex = Math.min(Math.max(0, state.cube.layerIndex), totalLayers - 1);
+  const layer = CUBE_LAYERS[layerIndex];
+  const maxHp = layer.hp;
+  const remainingHp = isComplete ? 0 : Math.max(0, state.cube.layerHp[layerIndex] ?? maxHp);
+  const remainingRatio = maxHp > 0 ? clamp01(remainingHp / maxHp) : 0;
+
+  return {
+    layerIndex,
+    layerNumber: layerIndex + 1,
+    totalLayers,
+    name: layer.name,
+    remainingHp,
+    maxHp,
+    remainingPercent: Math.round(remainingRatio * 100),
+    destroyedPercent: Math.round((1 - remainingRatio) * 100),
+    isComplete
+  };
+}
+
 export function getUnlockedWeaponTypes(state) {
   return WEAPON_TYPES.filter((weapon) => weapon.unlockLayer <= state.cube.layerIndex);
 }
@@ -317,6 +339,23 @@ export function getWeaponType(typeId) {
 
 export function getLayerDamageRule(layerIndex) {
   return LAYER_DAMAGE_RULES[Math.min(layerIndex, LAYER_DAMAGE_RULES.length - 1)];
+}
+
+export function getLayerVulnerabilitySummary(layerIndex) {
+  const rule = getLayerDamageRule(layerIndex);
+  const zoneNames = rule.zones.map((zoneId) => ZONES[zoneId]?.name ?? zoneId);
+  const requiredWeaponTypes = rule.weaponTypes ?? [];
+  const requiredWeaponNames = requiredWeaponTypes.map((typeId) => getWeaponType(typeId).name);
+  const weaponText = requiredWeaponNames.length > 0 ? ` · только ${requiredWeaponNames.join(", ")}` : "";
+
+  return {
+    layerIndex: Math.min(layerIndex, LAYER_DAMAGE_RULES.length - 1),
+    zones: [...rule.zones],
+    zoneNames,
+    requiredWeaponTypes: [...requiredWeaponTypes],
+    requiredWeaponNames,
+    text: `${zoneNames.join(", ")}${weaponText}`
+  };
 }
 
 export function canWeaponDamageLayer(type, layerIndex, options = {}) {

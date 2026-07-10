@@ -12,7 +12,8 @@ import {
   deserializeGameState,
   formatNumber,
   getCurrentLayer,
-  getLayerDamageRule,
+  getCurrentLayerProgress,
+  getLayerVulnerabilitySummary,
   getRemainingCubeHp,
   getReachableZonesForWeapon,
   getSiegeGateStatus,
@@ -37,6 +38,8 @@ const ui = {
   ordersValue: document.querySelector("#ordersValue"),
   shardsValue: document.querySelector("#shardsValue"),
   hpValue: document.querySelector("#hpValue"),
+  hpSubvalue: document.querySelector("#hpSubvalue"),
+  layerHpFill: document.querySelector("#layerHpFill"),
   stageLabel: document.querySelector("#stageLabel"),
   slotCount: document.querySelector("#slotCount"),
   slotRow: document.querySelector("#slotRow"),
@@ -287,6 +290,7 @@ function drawCube(width, height, metrics) {
   }
 
   drawLayerVeins(metrics);
+  drawLayerVulnerabilityBands(metrics);
   drawDamageMarks(metrics);
   drawWeakSpot(metrics);
   drawZoneBands(metrics);
@@ -373,6 +377,30 @@ function drawWeakSpot(metrics) {
   ctx.moveTo(x, y - 28);
   ctx.lineTo(x, y + 28);
   ctx.stroke();
+}
+
+function drawLayerVulnerabilityBands(metrics) {
+  const summary = getLayerVulnerabilitySummary(state.cube.layerIndex);
+  const { cubeLeft, cubeRight, cubeBottom, cubeWorldHeight } = metrics;
+  const cubeWidth = cubeRight - cubeLeft;
+  for (const zoneId of summary.zones) {
+    if (zoneId === "weak") {
+      continue;
+    }
+    const zone = ZONES[zoneId];
+    const y1 = cubeBottom - (zone.to - cameraOffset) * cubeWorldHeight;
+    const y2 = cubeBottom - (zone.from - cameraOffset) * cubeWorldHeight;
+    if (y2 < 0 || y1 > canvas.height * 0.74) {
+      continue;
+    }
+    ctx.fillStyle = "rgba(142, 207, 116, 0.08)";
+    ctx.fillRect(cubeLeft, y1, cubeWidth, y2 - y1);
+    ctx.strokeStyle = "rgba(142, 207, 116, 0.24)";
+    ctx.setLineDash([8 * devicePixelRatio, 6 * devicePixelRatio]);
+    ctx.lineWidth = 1 * devicePixelRatio;
+    ctx.strokeRect(cubeLeft + 7, y1 + 7, cubeWidth - 14, y2 - y1 - 14);
+    ctx.setLineDash([]);
+  }
 }
 
 function drawZoneBands(metrics) {
@@ -561,18 +589,24 @@ function drawFloatingTexts(width, height, metrics) {
 function renderUi() {
   const remainingHp = getRemainingCubeHp(state);
   const currentLayer = getCurrentLayer(state);
+  const layerProgress = getCurrentLayerProgress(state);
   ui.ordersValue.textContent = formatNumber(state.resources.orders);
   ui.shardsValue.textContent = formatNumber(state.resources.shards);
-  ui.hpValue.textContent = `${formatNumber(remainingHp)} HP`;
+  ui.hpValue.textContent = state.won
+    ? "100% разрушено"
+    : `${formatNumber(layerProgress.remainingHp)} / ${formatNumber(layerProgress.maxHp)} HP`;
+  ui.hpSubvalue.textContent = `Слой ${layerProgress.layerNumber}/${layerProgress.totalLayers} · ${layerProgress.destroyedPercent}% · Куб ${formatNumber(remainingHp)} HP`;
+  ui.layerHpFill.style.width = `${layerProgress.destroyedPercent}%`;
   const siegeGate = getSiegeGateStatus(state);
+  const layerPrefix = `Слой ${layerProgress.layerNumber}/${layerProgress.totalLayers}`;
   if (state.won) {
     ui.stageLabel.textContent = "Куб разрушен · начните новую осаду";
   } else if (siegeGate.active) {
     ui.stageLabel.textContent = siegeGate.affordable
-      ? `${currentLayer.name} · ${siegeGate.weaponName} доступна!`
-      : `${currentLayer.name} · нужна ${siegeGate.weaponName}: ещё ${describeMissing(siegeGate)}`;
+      ? `${layerPrefix} · ${currentLayer.name} · ${siegeGate.weaponName} доступна!`
+      : `${layerPrefix} · ${currentLayer.name} · нужна ${siegeGate.weaponName}: ещё ${describeMissing(siegeGate)}`;
   } else {
-    ui.stageLabel.textContent = currentLayer.name;
+    ui.stageLabel.textContent = `${layerPrefix} · ${currentLayer.name}`;
   }
   ui.slotCount.textContent = `${state.unlockedSlots}/8`;
   ui.selectedWeaponName.textContent = getWeaponType(state.selectedWeaponType).name;
@@ -683,20 +717,20 @@ function renderZoneLine() {
   const type = slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
   const source = slotWeapon ? "В слоте" : "К постройке";
   const layerIndex = state.cube.layerIndex;
-  const rule = getLayerDamageRule(layerIndex);
+  const vulnerability = getLayerVulnerabilitySummary(layerIndex);
   const reaches =
     canWeaponDamageLayer(type, layerIndex) ||
     canWeaponDamageLayer(type, layerIndex, { hitWeakSpot: true });
   const weaponZones = describeWeaponZones(type);
-  const layerZones = describeLayerRule(rule);
   const overlap = getReachableZonesForWeapon(type, layerIndex);
+  const layerText = `Слой уязвим: ${vulnerability.text}`;
 
   ui.zoneLine.classList.toggle("warning", !reaches);
   if (reaches) {
     const overlapText = overlap.length > 0 ? ` · достаёт: ${overlap.map(formatZoneName).join(", ")}` : "";
-    ui.zoneLine.textContent = `${source}: ${type.name} · ${weaponZones}${overlapText}`;
+    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
   } else {
-    ui.zoneLine.textContent = `${source}: ${type.name} не достаёт до слоя. Нужны: ${layerZones}`;
+    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} не достаёт до слоя.`;
   }
 }
 
@@ -720,9 +754,10 @@ function getContextHint() {
   if (state.stats.collectedBlocks === 0 && state.blocks.some((block) => block.resting)) {
     return "На поле лежат блоки куба: соберите их для первых осколков.";
   }
-  const selectedType = getWeaponType(state.selectedWeaponType);
-  if (state.stats.blockedShots > 0 && !canWeaponDamageLayer(selectedType, state.cube.layerIndex)) {
-    return "Если урон остановился, выберите орудие с зоной текущего слоя.";
+  const slotWeapon = state.slots[state.selectedSlot]?.weapon;
+  const inspectedType = slotWeapon ? getWeaponType(slotWeapon.typeId) : getWeaponType(state.selectedWeaponType);
+  if (state.stats.blockedShots > 0 && !canWeaponDamageLayer(inspectedType, state.cube.layerIndex)) {
+    return `Если урон остановился: текущий слой уязвим (${getLayerVulnerabilitySummary(state.cube.layerIndex).text}).`;
   }
   return null;
 }
@@ -824,7 +859,7 @@ function reportResult(result, okMessage) {
     locked: "Орудие ещё не открыто",
     cost: "Не хватает ресурсов",
     prerequisite: "Сначала разрушьте нужный слой куба",
-    range: "Орудие не достаёт до текущей зоны",
+    range: `Орудие не достаёт. Слой уязвим: ${getLayerVulnerabilitySummary(state.cube.layerIndex).text}`,
     cooldown: "Орудие перезаряжается",
     level: "Уровень уже максимальный",
     healthy: "Орудие исправно",
@@ -952,13 +987,6 @@ function describeWeaponZones(type) {
     zones.push("слабые места");
   }
   return zones.join(", ") || "нет зоны";
-}
-
-function describeLayerRule(rule) {
-  if (rule.weaponTypes?.length) {
-    return rule.weaponTypes.map((typeId) => getWeaponType(typeId).name).join(", ");
-  }
-  return rule.zones.map(formatZoneName).join(", ");
 }
 
 function formatZoneName(zoneId) {
