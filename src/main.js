@@ -32,7 +32,7 @@ import {
   tickGame,
   upgradeWeapon
 } from "./gameState.js";
-import { readSave, removeSave, writeSave } from "./persistence.js";
+import { exportSave, importSave, readSave, removeSave, writeSave } from "./persistence.js";
 import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.js";
 import { getVolume, isMuted, playSound, setMuted, setVolume, unlockAudio } from "./audio.js";
 
@@ -85,6 +85,12 @@ const ui = {
   effectsHint: document.querySelector("#effectsHint"),
   reducedMotionNotice: document.querySelector("#reducedMotionNotice"),
   saveButton: document.querySelector("#saveButton"),
+  saveDiagnosticsButton: document.querySelector("#saveDiagnosticsButton"),
+  saveDiagnosticsDialog: document.querySelector("#saveDiagnosticsDialog"),
+  saveDiagnosticsClose: document.querySelector("#saveDiagnosticsClose"),
+  saveDiagnosticsData: document.querySelector("#saveDiagnosticsData"),
+  saveExportButton: document.querySelector("#saveExportButton"),
+  saveImportButton: document.querySelector("#saveImportButton"),
   resetButton: document.querySelector("#resetButton"),
   finalCutscene: document.querySelector("#finalCutscene"),
   skipCutscene: document.querySelector("#skipCutscene"),
@@ -233,6 +239,37 @@ ui.cameraHome.addEventListener("click", () => setCamera(0));
 ui.saveButton.addEventListener("click", () => {
   const result = saveGame();
   showToast(result.ok ? "Осада сохранена" : describeStorageFailure(result.reason));
+});
+
+ui.saveDiagnosticsButton.addEventListener("click", () => {
+  exportSaveToDiagnostics();
+  ui.saveDiagnosticsDialog.showModal();
+});
+
+ui.saveDiagnosticsClose.addEventListener("click", () => {
+  ui.saveDiagnosticsDialog.close();
+});
+
+ui.saveExportButton.addEventListener("click", exportSaveToDiagnostics);
+
+ui.saveImportButton.addEventListener("click", () => {
+  let importedState;
+  const result = importSave(
+    getStorage,
+    SAVE_KEY,
+    ui.saveDiagnosticsData.value,
+    (serialized) => {
+      importedState = deserializeGameState(serialized);
+    }
+  );
+  if (!result.ok) {
+    showToast(result.reason === "invalid"
+      ? "Импорт отклонён: save некорректен"
+      : describeStorageFailure(result.reason));
+    return;
+  }
+  state = importedState;
+  window.location.reload();
 });
 
 ui.resetButton.addEventListener("click", () => {
@@ -1433,6 +1470,22 @@ function saveGame() {
     persistenceStatus.message = describeStorageFailure(result.reason);
   }
   return result;
+}
+
+function exportSaveToDiagnostics() {
+  if (persistenceStatus.writeEnabled) {
+    saveGame();
+  }
+  const result = exportSave(getStorage, SAVE_KEY);
+  if (result.ok) {
+    ui.saveDiagnosticsData.value = result.value;
+    showToast("Save подготовлен для экспорта");
+    return;
+  }
+  ui.saveDiagnosticsData.value = "";
+  showToast(result.reason === "not-found"
+    ? "Нет save для экспорта"
+    : describeStorageFailure(result.reason));
 }
 
 function loadGame() {

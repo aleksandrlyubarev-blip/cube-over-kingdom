@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readSave, removeSave, writeSave } from "../src/persistence.js";
+import {
+  exportSave,
+  importSave,
+  readSave,
+  removeSave,
+  writeSave
+} from "../src/persistence.js";
 
 function createStorage(entries = []) {
   const values = new Map(entries);
@@ -125,4 +131,64 @@ test("serialized values pass through without parsing or modification", () => {
   assert.equal(readResult.value, serialized);
   assert.equal(writtenValue, serialized);
   assert.deepEqual(writeResult, { ok: true });
+});
+
+test("exportSave includes only the requested save", () => {
+  const storage = createStorage([
+    ["slot", '{"version":5,"progress":12}'],
+    ["secret-token", "must-not-leak"]
+  ]);
+
+  const result = exportSave(() => storage, "slot");
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(JSON.parse(result.value), {
+    format: "cube-over-kingdom-save-export",
+    version: 1,
+    save: '{"version":5,"progress":12}'
+  });
+  assert.equal(result.value.includes("must-not-leak"), false);
+  assert.equal(result.value.includes("secret-token"), false);
+});
+
+test("importSave validates before replacing the current save", () => {
+  const storage = createStorage([["slot", "current-save"]]);
+  const exported = JSON.stringify({
+    format: "cube-over-kingdom-save-export",
+    version: 1,
+    save: "candidate-save"
+  });
+  let validated;
+
+  const result = importSave(() => storage, "slot", exported, (save) => {
+    validated = save;
+  });
+
+  assert.equal(validated, "candidate-save");
+  assert.deepEqual(result, { ok: true });
+  assert.equal(storage.getItem("slot"), "candidate-save");
+});
+
+test("invalid imports do not destroy the current save", () => {
+  const invalidImports = [
+    "not-json",
+    JSON.stringify({ format: "wrong", version: 1, save: "candidate" }),
+    JSON.stringify({
+      format: "cube-over-kingdom-save-export",
+      version: 1,
+      save: "invalid-game-save"
+    })
+  ];
+
+  for (const serialized of invalidImports) {
+    const storage = createStorage([["slot", "current-save"]]);
+    const result = importSave(() => storage, "slot", serialized, () => {
+      if (serialized.includes("invalid-game-save")) {
+        throw new Error("invalid save data");
+      }
+    });
+
+    assert.deepEqual(result, { ok: false, reason: "invalid" });
+    assert.equal(storage.getItem("slot"), "current-save");
+  }
 });

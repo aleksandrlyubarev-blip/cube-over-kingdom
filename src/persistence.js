@@ -41,6 +41,45 @@ export function removeSave(getStorage, key) {
   }
 }
 
+const EXPORT_FORMAT = "cube-over-kingdom-save-export";
+const EXPORT_VERSION = 1;
+
+export function exportSave(getStorage, key) {
+  const saved = readSave(getStorage, key);
+  if (!saved.ok) {
+    return saved;
+  }
+
+  return {
+    ok: true,
+    value: JSON.stringify({
+      format: EXPORT_FORMAT,
+      version: EXPORT_VERSION,
+      save: saved.value
+    }, null, 2)
+  };
+}
+
+export function importSave(getStorage, key, serializedExport, validateSave) {
+  let envelope;
+
+  try {
+    envelope = JSON.parse(serializedExport);
+    if (
+      envelope?.format !== EXPORT_FORMAT ||
+      envelope?.version !== EXPORT_VERSION ||
+      typeof envelope?.save !== "string"
+    ) {
+      return { ok: false, reason: "invalid" };
+    }
+    validateSave(envelope.save);
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
+
+  return writeSave(getStorage, key, envelope.save);
+}
+
 function isQuotaExceededError(error) {
   let name;
   let code;

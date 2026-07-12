@@ -39,6 +39,7 @@
           <button id="muteButton" class="icon-button" type="button" title="Выключить звук" aria-label="Выключить звук" aria-pressed="false">🔊</button>
           <button id="effectsButton" class="icon-button" type="button" title="Настройки эффектов" aria-label="Настройки эффектов">⚙</button>
           <button id="saveButton" class="icon-button" type="button" title="Сохранить">S</button>
+          <button id="saveDiagnosticsButton" class="icon-button" type="button" title="Диагностика save" aria-label="Диагностика save">D</button>
           <button id="resetButton" class="reset-action danger" type="button" title="Начать заново">Новая</button>
         </div>
       </header>
@@ -185,6 +186,21 @@
           Системная настройка «Уменьшение движения» активна и отключает эффекты.
         </p>
       </form>
+    </dialog>
+
+    <dialog id="saveDiagnosticsDialog" class="game-dialog settings-dialog" aria-labelledby="saveDiagnosticsTitle">
+      <div class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="saveDiagnosticsTitle">Диагностика save</h2>
+          <button id="saveDiagnosticsClose" class="icon-button" type="button" title="Закрыть">×</button>
+        </header>
+        <p>Скопируйте экспорт или вставьте ранее экспортированный save для проверки и импорта.</p>
+        <textarea id="saveDiagnosticsData" rows="12" aria-label="Экспортированный save" spellcheck="false"></textarea>
+        <div class="confirm-actions">
+          <button id="saveExportButton" class="plain-button" type="button">Экспорт</button>
+          <button id="saveImportButton" class="primary-button" type="button">Импорт</button>
+        </div>
+      </div>
     </dialog>
 
     <script type="module" src="./src/main.js"></script>
