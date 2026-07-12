@@ -123,6 +123,7 @@ let cutsceneTimer = 0;
 let autosaveBackoff = 0;
 let pendingConfirmation = null;
 let sessionSuspended = document.visibilityState === "hidden";
+let animationFrameId = null;
 let observedShots = state.stats.shots;
 let observedLayerIndex = state.cube.layerIndex;
 let tutorialStep = hasSeenTutorial() || state.stats.builtWeapons > 0 ? -1 : 0;
@@ -135,7 +136,7 @@ renderUi();
 renderEffectsSettings();
 renderMuteButton();
 showOfflineRecap(initialOfflineRecap);
-requestAnimationFrame(loop);
+scheduleFrame();
 
 window.addEventListener("resize", resizeCanvas);
 window.addEventListener("focus", resumeSession);
@@ -325,9 +326,9 @@ canvas.addEventListener(
 );
 
 function loop(now) {
+  animationFrameId = null;
   if (sessionSuspended) {
     lastFrame = now;
-    requestAnimationFrame(loop);
     return;
   }
 
@@ -359,7 +360,13 @@ function loop(now) {
   }
   maybeShowVictory();
 
-  requestAnimationFrame(loop);
+  scheduleFrame();
+}
+
+function scheduleFrame() {
+  if (!sessionSuspended && animationFrameId === null) {
+    animationFrameId = requestAnimationFrame(loop);
+  }
 }
 
 function renderScene() {
@@ -1457,6 +1464,10 @@ function applyOfflineCatchUp(targetState, nowMs) {
 
 function suspendSession() {
   sessionSuspended = true;
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
   saveGame();
 }
 
@@ -1471,6 +1482,7 @@ function resumeSession() {
   renderUi();
   showOfflineRecap(recap);
   lastFrame = performance.now();
+  scheduleFrame();
 }
 
 function resetGame() {
