@@ -989,16 +989,20 @@ function renderZoneLine() {
   const reach = getWeaponLayerReachStatus(type, layerIndex);
   const weaponZones = describeWeaponZones(type);
   const layerText = `Слой уязвим: ${vulnerability.text}`;
+  const recommendedCategory = vulnerability.requiredWeaponNames.length > 0
+    ? vulnerability.requiredWeaponNames.join(" или ")
+    : vulnerability.zoneNames.filter((name) => name !== ZONES.weak.name).join(" или ");
+  const recommendationText = `Подходящая категория: ${recommendedCategory}`;
 
   ui.zoneLine.classList.toggle("warning", reach.kind === "blocked");
   ui.zoneLine.classList.toggle("weak-only", reach.kind === "weak-only");
   if (reach.kind === "normal") {
     const overlapText = ` · достаёт: ${reach.normalZones.map(formatZoneName).join(", ")}`;
-    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
+    ui.zoneLine.textContent = `${layerText}. ${recommendationText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
   } else if (reach.kind === "weak-only") {
-    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} наносит урон только по слабому месту; обычные выстрелы вне зоны.`;
+    ui.zoneLine.textContent = `${layerText}. ${recommendationText}. ${source}: ${type.name} наносит урон только по слабому месту; обычные выстрелы вне зоны.`;
   } else {
-    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} не достаёт до слоя.`;
+    ui.zoneLine.textContent = `${layerText}. ${recommendationText}. ${source}: ${type.name} не достаёт до слоя.`;
   }
 }
 
