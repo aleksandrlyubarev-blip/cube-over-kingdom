@@ -1,6 +1,6 @@
 # Balance Snapshot
 
-Generated: 2026-07-10T16:14:25.707Z
+Generated: 2026-07-12T03:26:55.414Z
 
 ## Theoretical 4-Slot Pressure
 
@@ -149,6 +149,16 @@ Result: win in 1h 36m; combat: 1h 36m; acquisition: 41s; remaining HP: 0.
 | Внутреннее ядро | 11m 21s | 0s | 11m 21s | 1h 15m |
 | Сердце куба | 21m 16s | 34s | 20m 42s | 1h 36m |
 
+
+## Collection Scenarios (Excluded From Solver Guardrails)
+
+| Scenario | Result | Total | Combat | Acquisition | Collected blocks | Shards collected |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Ручной сбор | win | 3h 23m | 3h 22m | 1m 49s | 47430 | 322928 |
+| Автосбор 10% | win | 3h 23m | 3h 22m | 1m 49s | 9772 | 57152 |
+| Автосбор 25% | win | 3h 23m | 3h 22m | 1m 49s | 24411 | 146612 |
+| Автосбор 50% | win | 3h 23m | 3h 22m | 1m 49s | 45621 | 396006 |
+| Автосбор 100% | win | 3h 23m | 3h 22m | 1m 49s | 47438 | 646224 |
 
 ## Diagnostics (Excluded From Solver Guardrails)
 

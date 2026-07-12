@@ -124,9 +124,40 @@ export const DIAGNOSTIC_PROFILES = [
   }
 ];
 
+export const COLLECTION_SCENARIOS = [
+  { id: "manual", name: "Ручной сбор", collectFraction: 1, purchasedNodeIds: [] },
+  { id: "auto10", name: "Автосбор 10%", collectFraction: 0, purchasedNodeIds: ["labyrinth13"] },
+  {
+    id: "auto25",
+    name: "Автосбор 25%",
+    collectFraction: 0,
+    purchasedNodeIds: ["labyrinth13", "labyrinth14"]
+  },
+  {
+    id: "auto50",
+    name: "Автосбор 50%",
+    collectFraction: 0,
+    purchasedNodeIds: ["labyrinth13", "labyrinth14", "labyrinth15", "labyrinth16"]
+  },
+  {
+    id: "auto100",
+    name: "Автосбор 100%",
+    collectFraction: 0,
+    purchasedNodeIds: [
+      "labyrinth13",
+      "labyrinth14",
+      "labyrinth15",
+      "labyrinth16",
+      "labyrinth17",
+      "labyrinth18"
+    ]
+  }
+];
+
 export function buildBalanceReport(options = {}) {
   const solverProfiles = options.solverProfiles ?? SOLVER_PROFILES;
   const diagnosticProfiles = options.diagnosticProfiles ?? DIAGNOSTIC_PROFILES;
+  const collectionScenarios = options.collectionScenarios ?? COLLECTION_SCENARIOS;
   const budgetPartition = options.budgetPartition ?? calculateBudgetPartition();
   const currentLayerHp = options.layerHp ?? CUBE_LAYERS.map((layer) => layer.hp);
   const hpSolverIterations = buildHpSolverIterations(
@@ -144,6 +175,16 @@ export function buildBalanceReport(options = {}) {
     dpsTable: buildDpsTable(),
     stagePressure: buildStagePressureTable(),
     profiles: currentIteration.profiles,
+    collectionScenarios: collectionScenarios.map((scenario) =>
+      simulateProfile(
+        {
+          ...solverProfiles[0],
+          ...scenario,
+          purchasedNodeIds: scenario.purchasedNodeIds
+        },
+        currentLayerHp
+      )
+    ),
     diagnosticProfiles: diagnosticProfiles.map((profile) => simulateProfile(profile, currentLayerHp)),
     budgetPartition,
     budgetProjection: currentIteration.budgetProjection,
@@ -225,6 +266,7 @@ function buildStagePressureTable() {
 export function simulateProfile(profile, layerHpOverride = null) {
   const rng = createRng(profile.seed);
   const state = createGameState();
+  state.labyrinth.purchasedNodeIds = [...(profile.purchasedNodeIds ?? [])];
   if (layerHpOverride) {
     state.cube.layerHp = [...layerHpOverride];
     state.cube.totalHp = layerHpOverride.reduce((sum, hp) => sum + hp, 0);
@@ -978,6 +1020,7 @@ function printReport(data) {
   printGuardrails("Current total guardrails", data.guardrails);
   printGuardrails("Current combat guardrails", data.combatGuardrails);
   printHardGateEconomy(data.hardGateEconomy);
+  printCollectionScenarios(data.collectionScenarios);
   printDiagnosticProfiles(data.diagnosticProfiles);
 
   if (data.hpReshuffle) {
@@ -1054,6 +1097,22 @@ function printDiagnosticProfiles(profiles) {
       )}% (${formatDuration(profile.activeElapsedSeconds)} active + ${formatDuration(
         profile.offlineElapsedSeconds
       )} catch-up)`
+    );
+  }
+}
+
+function printCollectionScenarios(scenarios) {
+  if (!scenarios?.length) {
+    return;
+  }
+  console.log("");
+  console.log("Collection scenarios (excluded from solver guardrails):");
+  for (const scenario of scenarios) {
+    console.log(
+      `- ${scenario.name}: ${scenario.completed ? "win" : "not finished"} in ${scenario.elapsed}, ` +
+        `combat ${scenario.combatElapsed}, acquisition ${scenario.acquisitionWait}, ` +
+        `collected ${formatNumber(scenario.stats.collectedBlocks)} blocks / ` +
+        `${formatNumber(scenario.stats.shardsCollected)} shards`
     );
   }
 }
@@ -1326,6 +1385,21 @@ function renderMarkdown(data) {
       lines.push("| none | - | - |");
     }
     lines.push("");
+  }
+
+  lines.push(
+    "",
+    "## Collection Scenarios (Excluded From Solver Guardrails)",
+    "",
+    "| Scenario | Result | Total | Combat | Acquisition | Collected blocks | Shards collected |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: |"
+  );
+  for (const scenario of data.collectionScenarios ?? []) {
+    lines.push(
+      `| ${scenario.name} | ${scenario.completed ? "win" : "not finished"} | ${scenario.elapsed} | ${
+        scenario.combatElapsed
+      } | ${scenario.acquisitionWait} | ${scenario.stats.collectedBlocks} | ${scenario.stats.shardsCollected} |`
+    );
   }
 
   lines.push("", "## Diagnostics (Excluded From Solver Guardrails)", "");
