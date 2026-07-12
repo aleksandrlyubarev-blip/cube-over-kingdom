@@ -651,6 +651,26 @@ h1 {
   line-height: 1.3;
 }
 
+.maintenance-bonus {
+  display: inline-block;
+  align-self: end;
+  width: fit-content;
+  margin-top: 7px;
+  padding: 3px 6px;
+  border: 1px solid #6c543a;
+  border-radius: 999px;
+  color: var(--gold-2);
+  font-size: 10px;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.upgrade-node[data-status="purchased"] .maintenance-bonus {
+  border-color: #7da35c;
+  color: #bfe17d;
+}
+
 .upgrade-cost {
   margin: 9px 0;
   color: var(--gold-2);

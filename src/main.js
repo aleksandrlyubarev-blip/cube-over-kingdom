@@ -876,9 +876,13 @@ function renderLabyrinth() {
       item.className = "upgrade-node";
       item.classList.toggle("done", status === "purchased");
       item.dataset.status = notImplemented ? "not-implemented" : status;
+      const maintenanceBonus = node.branch === "maintenance"
+        ? `<span class="maintenance-bonus">${status === "purchased" ? "Бонус активен" : "Бонус ремонта и стойкости"}</span>`
+        : "";
       item.innerHTML = `
         <h3>${node.number}. ${node.name}</h3>
         <p>${node.effectText}</p>
+        ${maintenanceBonus}
         <div class="upgrade-cost">${lockReason ?? (notImplemented ? "Скоро" : formatCost(node.cost))}</div>
       `;
       const button = document.createElement("button");
