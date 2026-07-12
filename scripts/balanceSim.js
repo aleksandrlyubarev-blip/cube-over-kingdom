@@ -8,6 +8,7 @@ import {
   UPGRADE_NODES,
   WEAPON_TYPES,
   buildWeapon,
+  buyLabyrinthNode,
   buyUpgradeNode,
   canAfford,
   canBuyUpgradeNode,
@@ -154,10 +155,38 @@ export const COLLECTION_SCENARIOS = [
   }
 ];
 
+export const LABYRINTH_STRATEGIES = [
+  {
+    id: "manual-branch",
+    name: "Ручная ветка",
+    branch: "manual",
+    labyrinthPlan: ["labyrinth01", "labyrinth02"]
+  },
+  {
+    id: "automation-branch",
+    name: "Ветка автоматизации",
+    branch: "automation",
+    labyrinthPlan: ["labyrinth01", "labyrinth07"]
+  },
+  {
+    id: "collection-branch",
+    name: "Ветка сбора",
+    branch: "collection",
+    labyrinthPlan: ["labyrinth01", "labyrinth13", "labyrinth14", "labyrinth15"]
+  },
+  {
+    id: "quality-branch",
+    name: "Ветка качества",
+    branch: "quality",
+    labyrinthPlan: ["labyrinth01", "labyrinth07", "labyrinth25"]
+  }
+];
+
 export function buildBalanceReport(options = {}) {
   const solverProfiles = options.solverProfiles ?? SOLVER_PROFILES;
   const diagnosticProfiles = options.diagnosticProfiles ?? DIAGNOSTIC_PROFILES;
   const collectionScenarios = options.collectionScenarios ?? COLLECTION_SCENARIOS;
+  const labyrinthStrategies = options.labyrinthStrategies ?? LABYRINTH_STRATEGIES;
   const budgetPartition = options.budgetPartition ?? calculateBudgetPartition();
   const currentLayerHp = options.layerHp ?? CUBE_LAYERS.map((layer) => layer.hp);
   const hpSolverIterations = buildHpSolverIterations(
@@ -185,6 +214,20 @@ export function buildBalanceReport(options = {}) {
         currentLayerHp
       )
     ),
+    labyrinthEconomy: buildLabyrinthEconomy(
+      labyrinthStrategies.map((strategy, index) => ({
+        ...simulateProfile(
+          {
+            ...solverProfiles[0],
+            ...strategy,
+            seed: 5101 + index
+          },
+          currentLayerHp
+        ),
+        branch: strategy.branch
+      })),
+      budgetPartition
+    ),
     diagnosticProfiles: diagnosticProfiles.map((profile) => simulateProfile(profile, currentLayerHp)),
     budgetPartition,
     budgetProjection: currentIteration.budgetProjection,
@@ -199,6 +242,38 @@ export function buildBalanceReport(options = {}) {
     reshufflePreviewGuardrails: currentIteration.previewGuardrails,
     reshufflePreviewCombatGuardrails: currentIteration.previewCombatGuardrails,
     hpSolverIterations
+  };
+}
+
+function buildLabyrinthEconomy(strategies, budgetPartition) {
+  const toleranceRatio = 0.25;
+  const targetSeconds = budgetPartition.totalTargetSeconds;
+  const minSeconds = Math.round(targetSeconds * (1 - toleranceRatio));
+  const maxSeconds = Math.round(targetSeconds * (1 + toleranceRatio));
+  const rows = strategies.map((strategy) => ({
+    ...strategy,
+    targetStatus: !strategy.completed || !strategy.labyrinthPlanComplete
+      ? "not-finished"
+      : strategy.elapsedSeconds < minSeconds
+        ? "too-short"
+        : strategy.elapsedSeconds > maxSeconds
+          ? "too-long"
+          : "within"
+  }));
+  const viableBranches = new Set(
+    rows
+      .filter((row) => row.completed && row.labyrinthPlanComplete && row.targetStatus === "within")
+      .map((row) => row.branch)
+  );
+  return {
+    targetSeconds,
+    minSeconds,
+    maxSeconds,
+    toleranceRatio,
+    rows,
+    allComplete: rows.every((row) => row.completed && row.labyrinthPlanComplete),
+    allWithinTarget: rows.every((row) => row.targetStatus === "within"),
+    noMandatoryBranch: viableBranches.size >= 3
   };
 }
 
@@ -275,6 +350,7 @@ export function simulateProfile(profile, layerHpOverride = null) {
   const samples = [];
   const layerDurations = [];
   const events = [];
+  const labyrinthSpent = { orders: 0, shards: 0 };
   let nextCollect = profile.collectEvery;
   let nextSpend = 0;
   let nextSample = profile.sampleEvery;
@@ -376,7 +452,7 @@ export function simulateProfile(profile, layerHpOverride = null) {
       }
 
       if (activeElapsedSeconds >= nextSpend) {
-        spendForProfile(state, profile, events);
+        spendForProfile(state, profile, events, labyrinthSpent);
         openCombatIfReady(currentLayerTimer, state);
         nextSpend += profile.spendEvery;
       }
@@ -452,6 +528,11 @@ export function simulateProfile(profile, layerHpOverride = null) {
           condition: round(slot.weapon.condition)
         })),
       purchasedNodes: [...state.purchasedNodes],
+      purchasedLabyrinthNodes: [...state.labyrinth.purchasedNodeIds],
+      labyrinthPlanComplete: (profile.labyrinthPlan ?? []).every((nodeId) =>
+        state.labyrinth.purchasedNodeIds.includes(nodeId)
+      ),
+      labyrinthSpent,
       layerDurations,
       samples,
       events: events.slice(-18)
@@ -643,7 +724,7 @@ function copyResources(resources) {
   };
 }
 
-function spendForProfile(state, profile, events) {
+function spendForProfile(state, profile, events, labyrinthSpent) {
   let actions = 0;
   while (actions < 8) {
     const starter = ensureStarterWeapon(state, events);
@@ -657,6 +738,24 @@ function spendForProfile(state, profile, events) {
       if (!replacement) {
         return;
       }
+      actions += 1;
+      continue;
+    }
+
+    const plannedNodeId = (profile.labyrinthPlan ?? []).find(
+      (nodeId) => !state.labyrinth.purchasedNodeIds.includes(nodeId)
+    );
+    if (plannedNodeId) {
+      const result = buyLabyrinthNode(state, plannedNodeId);
+      if (!result.ok) {
+        if (result.reason === "cost") {
+          return;
+        }
+        throw new Error(`Invalid labyrinth plan at ${plannedNodeId}: ${result.reason}`);
+      }
+      labyrinthSpent.orders += result.node.cost.orders;
+      labyrinthSpent.shards += result.node.cost.shards;
+      events.push(`[${formatDuration(state.time)}] labyrinth node ${result.node.name}`);
       actions += 1;
       continue;
     }
@@ -1020,6 +1119,7 @@ function printReport(data) {
   printGuardrails("Current total guardrails", data.guardrails);
   printGuardrails("Current combat guardrails", data.combatGuardrails);
   printHardGateEconomy(data.hardGateEconomy);
+  printLabyrinthEconomy(data.labyrinthEconomy);
   printCollectionScenarios(data.collectionScenarios);
   printDiagnosticProfiles(data.diagnosticProfiles);
 
@@ -1066,6 +1166,20 @@ function printReport(data) {
       printGuardrails(`  preview combat`, iteration.previewCombatGuardrails);
     }
   }
+}
+
+function printLabyrinthEconomy(economy) {
+  if (!economy?.rows.length) {
+    return;
+  }
+  console.log("");
+  console.log(
+    `Labyrinth branch economy (target ${formatDuration(economy.minSeconds)}-${formatDuration(economy.maxSeconds)}):`
+  );
+  for (const row of economy.rows) {
+    console.log(`- ${row.name}: ${row.completed ? "win" : "not finished"} in ${row.elapsed}, ${row.targetStatus}`);
+  }
+  console.log(`- no mandatory branch: ${economy.noMandatoryBranch}`);
 }
 
 function printObservedBudget(observedBudget) {
@@ -1349,6 +1463,33 @@ function renderMarkdown(data) {
       }
     }
   }
+
+  lines.push(
+    "",
+    "## Labyrinth Branch Economy",
+    "",
+    `Target full-run range: ${formatDuration(data.labyrinthEconomy.minSeconds)}-${formatDuration(
+      data.labyrinthEconomy.maxSeconds
+    )} (±${Math.round(data.labyrinthEconomy.toleranceRatio * 100)}%).`,
+    "",
+    "| Strategy | Branch | Investment | Result | Total | Combat | Acquisition | Target status |",
+    "| --- | --- | ---: | --- | ---: | ---: | ---: | --- |"
+  );
+  for (const strategy of data.labyrinthEconomy.rows) {
+    lines.push(
+      `| ${strategy.name} | ${strategy.branch} | ${strategy.labyrinthSpent.orders} orders / ${
+        strategy.labyrinthSpent.shards
+      } shards | ${strategy.completed && strategy.labyrinthPlanComplete ? "win" : "not finished"} | ${
+        strategy.elapsed
+      } | ${strategy.combatElapsed} | ${strategy.acquisitionWait} | ${strategy.targetStatus} |`
+    );
+  }
+  lines.push(
+    "",
+    `All strategies complete: ${data.labyrinthEconomy.allComplete ? "yes" : "no"}.`,
+    `All strategies within target: ${data.labyrinthEconomy.allWithinTarget ? "yes" : "no"}.`,
+    `No mandatory single branch: ${data.labyrinthEconomy.noMandatoryBranch ? "yes" : "no"}.`
+  );
 
   lines.push("", "## Profiles", "");
   for (const profile of data.profiles) {

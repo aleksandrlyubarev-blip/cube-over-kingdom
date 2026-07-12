@@ -1,6 +1,6 @@
 # Balance Snapshot
 
-Generated: 2026-07-12T03:26:55.414Z
+Generated: 2026-07-12T04:32:21.011Z
 
 ## Theoretical 4-Slot Pressure
 
@@ -74,6 +74,21 @@ Total HP: 9693000 current -> 9862549 suggested at 90% combat budget.
 
 Suggested preview total spread: 2.1x; optimizer: 1h 38m; ok: yes.
 Suggested preview combat spread: 2.08x; optimizer combat: 1h 37m; ok: yes.
+
+## Labyrinth Branch Economy
+
+Target full-run range: 2h 50m-4h 44m (±25%).
+
+| Strategy | Branch | Investment | Result | Total | Combat | Acquisition | Target status |
+| --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| Ручная ветка | manual | 0 orders / 25 shards | win | 3h 10m | 3h 9m | 1m 21s | within |
+| Ветка автоматизации | automation | 150 orders / 0 shards | win | 2h 59m | 2h 58m | 57s | within |
+| Ветка сбора | collection | 0 orders / 1150 shards | win | 3h 12m | 3h 11m | 1m 25s | within |
+| Ветка качества | quality | 150 orders / 200 shards | win | 2h 57m | 2h 56m | 52s | within |
+
+All strategies complete: yes.
+All strategies within target: yes.
+No mandatory single branch: yes.
 
 ## Profiles
 
