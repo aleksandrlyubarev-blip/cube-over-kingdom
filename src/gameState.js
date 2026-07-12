@@ -1,3 +1,5 @@
+import { getLabyrinthNode, getLabyrinthNodeVisibility } from "./upgradeLabyrinth.js";
+
 // HP слоёв: combat-paced вектор из balance-солвера (90% боевого бюджета,
 // 4-я итерация, сошёлся). Пассивный профиль ~3ч25м, оптимизатор ~1ч50м.
 export const CUBE_LAYERS = [
@@ -8,7 +10,11 @@ export const CUBE_LAYERS = [
   { id: "heart", name: "Сердце куба", hp: 4600000, color: "#5d3d58" }
 ];
 
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
+const LABYRINTH_IMPLEMENTED_MAX = 18;
+const KING_ORDER_COOLDOWN_SECONDS = 60;
+const WORKER_PULSE_INTERVAL_SECONDS = 30;
+const WORKER_PULSE_INCOME_SECONDS = 10;
 export const MAX_VISUAL_BLOCKS = 96;
 export const AUTO_COLLECT_RATE = 8;
 export const OFFLINE_PROGRESS_CAP_SECONDS = 8 * 60 * 60;
@@ -291,6 +297,11 @@ export function createGameState() {
     projectiles: [],
     floatingTexts: [],
     purchasedNodes: [],
+    labyrinth: {
+      purchasedNodeIds: [],
+      kingOrderCooldownSeconds: 0,
+      workerPulseProgressSeconds: 0
+    },
     modifiers: {
       tapPower: 4,
       orderRate: 0,
@@ -407,6 +418,20 @@ export function getWeaponCost(type, level = 1) {
   };
 }
 
+export function getWeaponBuildCost(state, type) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  const discount =
+    (purchased.includes("labyrinth10") ? 0.1 : 0) +
+    (purchased.includes("labyrinth11") ? 0.2 : 0);
+  const baseCost = getWeaponCost(type, 1);
+  const multiplier = Math.max(0, 1 - discount);
+  return {
+    orders: Math.ceil(baseCost.orders * multiplier),
+    shards: Math.ceil(baseCost.shards * multiplier)
+  };
+}
+
 export function getAverageQualityMultiplier(qualityBonus = 0) {
   const adjusted = getAdjustedQualityTable(qualityBonus);
   const totalChance = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
@@ -492,11 +517,84 @@ export function spend(state, cost) {
 }
 
 export function tapForOrders(state, amount = 1) {
-  const gained = state.modifiers.tapPower * amount;
+  ensureLabyrinth(state);
+  const baseGain = computeManualTapBaseGain(state);
+  let gained = baseGain * amount;
+  if (
+    amount > 0 &&
+    state.labyrinth.purchasedNodeIds.includes("labyrinth06") &&
+    state.labyrinth.kingOrderCooldownSeconds === 0
+  ) {
+    // Ready node 6 multiplies at most one tap-unit by x25 (extra x24 over normal).
+    gained += baseGain * Math.min(1, amount) * 24;
+    state.labyrinth.kingOrderCooldownSeconds = KING_ORDER_COOLDOWN_SECONDS;
+  }
   state.resources.orders += gained;
   state.stats.taps += amount;
   addFloatingText(state, `+${formatNumber(gained)} приказов`, 0.5, 0.68, "#f2d075");
   return gained;
+}
+
+export function getEffectiveOrderRate(state) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  let rate = state.modifiers.orderRate;
+  if (purchased.includes("labyrinth07")) {
+    rate += 2;
+  }
+  if (purchased.includes("labyrinth09")) {
+    rate += 5;
+  }
+  if (purchased.includes("labyrinth08")) {
+    rate *= 2;
+  }
+  return rate;
+}
+
+export function getEffectiveAutoCollectRate(state) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  const labyrinthFraction = purchased.includes("labyrinth18")
+    ? 1
+    : purchased.includes("labyrinth16")
+      ? 0.5
+      : purchased.includes("labyrinth14")
+        ? 0.25
+    : purchased.includes("labyrinth13")
+      ? 0.1
+      : 0;
+  const legacyFraction = state.modifiers.autoCollect ? 1 : 0;
+  return AUTO_COLLECT_RATE * Math.max(legacyFraction, labyrinthFraction);
+}
+
+export function getEffectiveShardYield(state) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  const bonus = (purchased.includes("labyrinth15") ? 0.25 : 0) +
+    (purchased.includes("labyrinth17") ? 0.75 : 0);
+  const multiplier = 1 + bonus;
+  return state.modifiers.shardYield * multiplier;
+}
+
+function computeManualTapBaseGain(state) {
+  const purchased = state.labyrinth.purchasedNodeIds;
+  let gain = state.modifiers.tapPower;
+  if (purchased.includes("labyrinth01")) {
+    gain += 1;
+  }
+  if (purchased.includes("labyrinth02")) {
+    gain += 2;
+  }
+  if (purchased.includes("labyrinth03")) {
+    gain += 5;
+  }
+  if (purchased.includes("labyrinth04")) {
+    gain += getEffectiveOrderRate(state) * 0.01;
+  }
+  if (purchased.includes("labyrinth05")) {
+    gain *= 1.25;
+  }
+  return gain;
 }
 
 export function buildWeapon(state, slotIndex = state.selectedSlot, typeId = state.selectedWeaponType) {
@@ -508,7 +606,7 @@ export function buildWeapon(state, slotIndex = state.selectedSlot, typeId = stat
   if (type.unlockLayer > state.cube.layerIndex) {
     return { ok: false, reason: "locked" };
   }
-  const cost = getWeaponCost(type, 1);
+  const cost = getWeaponBuildCost(state, type);
   if (!spend(state, cost)) {
     return { ok: false, reason: "cost" };
   }
@@ -535,7 +633,7 @@ export function replaceWeapon(state, slotIndex = state.selectedSlot, typeId = st
   if (type.unlockLayer > state.cube.layerIndex) {
     return { ok: false, reason: "locked" };
   }
-  const cost = getWeaponCost(type, 1);
+  const cost = getWeaponBuildCost(state, type);
   if (!spend(state, cost)) {
     return { ok: false, reason: "cost" };
   }
@@ -637,6 +735,39 @@ export function canBuyUpgradeNode(state, nodeId) {
   return { ok: true };
 }
 
+export function canBuyLabyrinthNode(state, nodeId) {
+  ensureLabyrinth(state);
+  const node = getLabyrinthNode(nodeId);
+  if (!node) {
+    return { ok: false, reason: "node" };
+  }
+  if (state.labyrinth.purchasedNodeIds.includes(nodeId)) {
+    return { ok: false, reason: "node" };
+  }
+  if (node.number > LABYRINTH_IMPLEMENTED_MAX) {
+    return { ok: false, reason: "not-implemented" };
+  }
+  const visibility = getLabyrinthNodeVisibility(state.labyrinth.purchasedNodeIds, nodeId);
+  if (visibility !== "available") {
+    return { ok: false, reason: "prerequisite" };
+  }
+  if (!canAfford(state, node.cost)) {
+    return { ok: false, reason: "cost" };
+  }
+  return { ok: true, node };
+}
+
+export function buyLabyrinthNode(state, nodeId) {
+  const availability = canBuyLabyrinthNode(state, nodeId);
+  if (!availability.ok) {
+    return availability;
+  }
+  const { node } = availability;
+  spend(state, node.cost);
+  state.labyrinth.purchasedNodeIds.push(node.id);
+  return { ok: true, node };
+}
+
 export function manualAimAt(state, x, y, slotIndex = state.selectedSlot) {
   const slot = state.slots[slotIndex];
   if (!slot?.weapon) {
@@ -685,7 +816,9 @@ export function tickGame(state, dt, random = Math.random) {
   }
 
   state.time += dt;
-  state.resources.orders += state.modifiers.orderRate * dt;
+  state.resources.orders += getEffectiveOrderRate(state) * dt;
+  advanceWorkerPulse(state, dt);
+  advanceLabyrinthCooldown(state, dt);
   state.cube.weakSpot.age += dt;
 
   const weakInterval = Math.max(7.5, 18 / state.modifiers.weakSpotRate);
@@ -720,9 +853,10 @@ export function tickGame(state, dt, random = Math.random) {
     }
   }
 
-  if (state.modifiers.autoCollect) {
+  const autoCollectRate = getEffectiveAutoCollectRate(state);
+  if (autoCollectRate > 0) {
     const bank = ensureBlockBank(state);
-    const accrued = bank.autoCollectCredit + Math.max(0, dt) * AUTO_COLLECT_RATE;
+    const accrued = bank.autoCollectCredit + Math.max(0, dt) * autoCollectRate;
     const due = Math.max(0, Math.floor(accrued + 1e-9));
     bank.autoCollectCredit = Math.max(0, accrued - due);
     const resting = state.blocks.filter((block) => block.resting);
@@ -878,7 +1012,9 @@ function advanceOfflineTime(state, seconds, random) {
     return;
   }
   state.time += seconds;
-  state.resources.orders += state.modifiers.orderRate * seconds;
+  state.resources.orders += getEffectiveOrderRate(state) * seconds;
+  advanceWorkerPulse(state, seconds);
+  advanceLabyrinthCooldown(state, seconds);
 
   const weakInterval = Math.max(7.5, 18 / state.modifiers.weakSpotRate);
   const totalWeakAge = (state.cube.weakSpot?.age ?? 0) + seconds;
@@ -899,9 +1035,10 @@ function advanceOfflineTime(state, seconds, random) {
     weapon.cooldown -= seconds;
   }
 
-  if (state.modifiers.autoCollect) {
+  const autoCollectRate = getEffectiveAutoCollectRate(state);
+  if (autoCollectRate > 0) {
     const bank = ensureBlockBank(state);
-    const accrued = bank.autoCollectCredit + seconds * AUTO_COLLECT_RATE;
+    const accrued = bank.autoCollectCredit + seconds * autoCollectRate;
     const due = Math.max(0, Math.floor(accrued + 1e-9));
     bank.autoCollectCredit = Math.max(0, accrued - due);
     collectBankedBlocks(state, due, { silent: true });
@@ -933,7 +1070,7 @@ export function collectBlock(state, blockId) {
     return { ok: false };
   }
   const [block] = state.blocks.splice(index, 1);
-  const gained = Math.max(1, Math.round(block.value * state.modifiers.shardYield));
+  const gained = Math.max(1, Math.round(block.value * getEffectiveShardYield(state)));
   state.resources.shards += gained;
   state.stats.collectedBlocks += 1;
   state.stats.shardsCollected += gained;
@@ -979,7 +1116,7 @@ export function collectBankedBlocks(state, maxCount = Number.POSITIVE_INFINITY, 
     bucket[1] -= take;
     remaining -= take;
     collected += take;
-    gained += take * Math.max(1, Math.round(bucket[0] * state.modifiers.shardYield));
+    gained += take * Math.max(1, Math.round(bucket[0] * getEffectiveShardYield(state)));
   }
 
   bank.buckets = bank.buckets.filter(([, count]) => count > 0);
@@ -1049,11 +1186,97 @@ export function migrateSaveData(parsed) {
   compactExcessBlocks(state);
   state.savedAtMs = Number.isFinite(state.savedAtMs) ? Math.max(0, Math.floor(state.savedAtMs)) : null;
   state.offlineRngState = normalizeOfflineRngState(state.offlineRngState);
+  state.labyrinth = normalizeLabyrinth(state.labyrinth);
 
   state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
   state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
   state.version = SAVE_VERSION;
   return state;
+}
+
+function normalizeLabyrinth(source) {
+  const purchasedNodeIds = [];
+  const seen = new Set();
+  if (Array.isArray(source?.purchasedNodeIds)) {
+    for (const id of source.purchasedNodeIds) {
+      if (typeof id !== "string" || id.length === 0 || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      purchasedNodeIds.push(id);
+    }
+  }
+
+  let cooldown = Number(source?.kingOrderCooldownSeconds);
+  if (!Number.isFinite(cooldown)) {
+    cooldown = 0;
+  }
+  cooldown = Math.max(0, Math.min(KING_ORDER_COOLDOWN_SECONDS, cooldown));
+
+  let pulseProgress = Number(source?.workerPulseProgressSeconds);
+  if (!Number.isFinite(pulseProgress) || pulseProgress < 0) {
+    pulseProgress = 0;
+  } else {
+    pulseProgress %= WORKER_PULSE_INTERVAL_SECONDS;
+  }
+
+  return {
+    purchasedNodeIds,
+    kingOrderCooldownSeconds: cooldown,
+    workerPulseProgressSeconds: pulseProgress
+  };
+}
+
+function ensureLabyrinth(state) {
+  if (!state.labyrinth || !Array.isArray(state.labyrinth.purchasedNodeIds)) {
+    state.labyrinth = normalizeLabyrinth(state.labyrinth);
+    return state.labyrinth;
+  }
+  if (!Number.isFinite(state.labyrinth.kingOrderCooldownSeconds)) {
+    state.labyrinth.kingOrderCooldownSeconds = 0;
+  }
+  if (
+    !Number.isFinite(state.labyrinth.workerPulseProgressSeconds) ||
+    state.labyrinth.workerPulseProgressSeconds < 0
+  ) {
+    state.labyrinth.workerPulseProgressSeconds = 0;
+  } else {
+    state.labyrinth.workerPulseProgressSeconds %= WORKER_PULSE_INTERVAL_SECONDS;
+  }
+  return state.labyrinth;
+}
+
+function advanceWorkerPulse(state, seconds) {
+  ensureLabyrinth(state);
+  if (
+    !(seconds > 0) ||
+    !state.labyrinth.purchasedNodeIds.includes("labyrinth12")
+  ) {
+    return;
+  }
+  const total = state.labyrinth.workerPulseProgressSeconds + seconds;
+  const pulses = Math.floor((total + 1e-9) / WORKER_PULSE_INTERVAL_SECONDS);
+  state.labyrinth.workerPulseProgressSeconds = total - pulses * WORKER_PULSE_INTERVAL_SECONDS;
+  if (state.labyrinth.workerPulseProgressSeconds < 1e-9) {
+    state.labyrinth.workerPulseProgressSeconds = 0;
+  }
+  if (pulses > 0) {
+    state.resources.orders +=
+      pulses * getEffectiveOrderRate(state) * WORKER_PULSE_INCOME_SECONDS;
+  }
+}
+
+function advanceLabyrinthCooldown(state, seconds) {
+  ensureLabyrinth(state);
+  if (!(seconds > 0)) {
+    return;
+  }
+  const current = state.labyrinth.kingOrderCooldownSeconds;
+  if (!(current > 0)) {
+    state.labyrinth.kingOrderCooldownSeconds = 0;
+    return;
+  }
+  state.labyrinth.kingOrderCooldownSeconds = Math.max(0, current - seconds);
 }
 
 function applyDamage(state, damage, x, y, options) {
@@ -1167,7 +1390,7 @@ export function getSiegeGateStatus(state) {
     (slot, index) => index < state.unlockedSlots && slot.weapon?.typeId === requiredTypeId
   );
   const active = !state.won && state.cube.layerIndex === gateLayerIndex && !hasRequiredWeapon;
-  const cost = getWeaponCost(type, 1);
+  const cost = getWeaponBuildCost(state, type);
   return {
     active,
     weaponName: type.name,

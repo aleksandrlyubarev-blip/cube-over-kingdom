@@ -1,12 +1,11 @@
 import {
   CUBE_LAYERS,
   OFFLINE_PROGRESS_CAP_SECONDS,
-  UPGRADE_NODES,
   WEAPON_TYPES,
   ZONES,
   buildWeapon,
-  buyUpgradeNode,
-  canBuyUpgradeNode,
+  buyLabyrinthNode,
+  canBuyLabyrinthNode,
   collectBankedBlocks,
   collectBlock,
   createGameState,
@@ -20,6 +19,7 @@ import {
   getRemainingCubeHp,
   getSiegeGateStatus,
   getUnlockedWeaponTypes,
+  getWeaponBuildCost,
   getWeaponCost,
   getWeaponLayerReachStatus,
   getWeaponType,
@@ -33,6 +33,7 @@ import {
   upgradeWeapon
 } from "./gameState.js";
 import { readSave, removeSave, writeSave } from "./persistence.js";
+import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
 const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
@@ -739,7 +740,7 @@ function renderWeaponCards() {
   ui.weaponCards.replaceChildren(
     ...WEAPON_TYPES.map((type) => {
       const isLocked = !unlocked.has(type.id);
-      const cost = getWeaponCost(type, 1);
+      const cost = getWeaponBuildCost(state, type);
       const card = document.createElement("button");
       card.type = "button";
       card.className = "weapon-card";
@@ -770,7 +771,7 @@ function renderWeaponCards() {
 function renderActionPanel() {
   const slot = state.slots[state.selectedSlot];
   const selectedType = getWeaponType(state.selectedWeaponType);
-  const selectedCost = getWeaponCost(selectedType, 1);
+  const selectedCost = getWeaponBuildCost(state, selectedType);
   const slotUnlocked = state.selectedSlot < state.unlockedSlots;
   const weapon = slot?.weapon;
 
@@ -835,7 +836,7 @@ function getContextHint() {
   if (state.won) {
     return "Куб пал. Начните новую осаду, чтобы проверить другой билд.";
   }
-  const stoneCost = getWeaponCost(getWeaponType("stoneThrower"), 1).orders;
+  const stoneCost = getWeaponBuildCost(state, getWeaponType("stoneThrower")).orders;
   if (state.stats.builtWeapons === 0) {
     if (state.resources.orders < stoneCost) {
       return `Цель: ${stoneCost} приказов на первый камнемёт. Текущие приказы: ${formatNumber(state.resources.orders)}.`;
@@ -867,24 +868,36 @@ function getInspectedWeaponType() {
 
 function renderLabyrinth() {
   ui.upgradeGrid.replaceChildren(
-    ...UPGRADE_NODES.map((node, index) => {
-      const done = state.purchasedNodes.includes(node.id);
-      const available = index < 2 || state.purchasedNodes.includes(UPGRADE_NODES[index - 1].id);
-      const canBuy = available ? canBuyUpgradeNode(state, node.id) : { ok: false, reason: "hidden" };
+    ...getVisibleLabyrinthNodes(state.labyrinth.purchasedNodeIds).map(({ node, status }) => {
+      const canBuy = canBuyLabyrinthNode(state, node.id);
+      const notImplemented = canBuy.reason === "not-implemented";
+      const lockReason = getLabyrinthLockReason(node, status, canBuy);
       const item = document.createElement("article");
       item.className = "upgrade-node";
-      item.classList.toggle("done", done);
+      item.classList.toggle("done", status === "purchased");
+      item.dataset.status = notImplemented ? "not-implemented" : status;
       item.innerHTML = `
-        <h3>${node.name}</h3>
-        <p>${node.effectText}${node.requiresLayerIndex ? ` · после слоя ${node.requiresLayerIndex}` : ""}</p>
-        <div class="upgrade-cost">${canBuy.reason === "prerequisite" ? "Слой ещё не разрушен" : formatCost(node.cost)}</div>
+        <h3>${node.number}. ${node.name}</h3>
+        <p>${node.effectText}</p>
+        <div class="upgrade-cost">${lockReason ?? (notImplemented ? "Скоро" : formatCost(node.cost))}</div>
       `;
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = done ? "Куплено" : available ? "Купить" : "Скрыто";
-      button.disabled = done || !available || !canBuy.ok;
+      button.textContent = status === "purchased"
+        ? "Куплено"
+        : notImplemented
+          ? "Скоро"
+          : status === "preview"
+            ? "Предпросмотр"
+            : canBuy.ok
+              ? "Купить"
+              : "Недостаточно ресурсов";
+      button.disabled = status !== "available" || !canBuy.ok;
       button.addEventListener("click", () => {
-        const result = buyUpgradeNode(state, node.id);
+        if (!canBuyLabyrinthNode(state, node.id).ok) {
+          return;
+        }
+        const result = buyLabyrinthNode(state, node.id);
         reportResult(result, node.effectText);
         renderLabyrinth();
       });
@@ -892,6 +905,19 @@ function renderLabyrinth() {
       return item;
     })
   );
+}
+
+function getLabyrinthLockReason(node, status, canBuy) {
+  if (status === "preview") {
+    const prerequisiteNames = node.prerequisites
+      .map((id) => getLabyrinthNode(id)?.name)
+      .filter(Boolean);
+    return `Требуется: ${prerequisiteNames.join(", ")}`;
+  }
+  if (status === "available" && canBuy.reason === "cost") {
+    return "Недостаточно ресурсов";
+  }
+  return null;
 }
 
 function handleCanvasTap(event) {
@@ -945,7 +971,7 @@ function findBlockAt(px, py) {
 
 function canBuildSelected() {
   const type = getWeaponType(state.selectedWeaponType);
-  return type.unlockLayer <= state.cube.layerIndex && canAffordCost(getWeaponCost(type, 1));
+  return type.unlockLayer <= state.cube.layerIndex && canAffordCost(getWeaponBuildCost(state, type));
 }
 
 function canUpgradeSelected() {
