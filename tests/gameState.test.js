@@ -333,6 +333,68 @@ test("labyrinth node 27 adds a slot on top of legacy slot upgrades", () => {
   assert.equal(state.unlockedSlots, 5);
 });
 
+test("labyrinth quality nodes 28-30 use exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth25", "labyrinth26", "labyrinth27"];
+  state.unlockedSlots = 3;
+  state.resources.shards = 13_300;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth29").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth30").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth28").ok, true);
+  assert.equal(state.resources.shards, 11_500);
+  assert.equal(buyLabyrinthNode(state, "labyrinth29").ok, true);
+  assert.equal(state.resources.shards, 8_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth30").ok, true);
+  assert.equal(state.resources.shards, 0);
+  assert.equal(state.unlockedSlots, 4);
+  assert.equal(state.unlockedSlots <= state.slots.length, true);
+});
+
+test("labyrinth node 28 increases only critical damage and node 30 guarantees a quality", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth28", "labyrinth30"];
+  const type = getWeaponType("ballista");
+
+  assert.equal(calculateWeaponShotDamage({ type, quality: QUALITY_TABLE[2] }), 230);
+  assert.equal(calculateWeaponShotDamage({ type, quality: QUALITY_TABLE[4], criticalDamageMultiplier: 1.25 }), 425);
+  assert.equal(calculateWeaponShotDamage({ type, quality: QUALITY_TABLE[2], criticalDamageMultiplier: 1.25 }), 230);
+
+  state.resources.orders = 1_000;
+  assert.equal(buildWeapon(state, 0, "stoneThrower").ok, true);
+  state.slots[0].weapon.cooldown = 0;
+  for (let shot = 0; shot < 10; shot += 1) {
+    tickGame(state, 0, () => 0.99);
+    state.slots[0].weapon.cooldown = 0;
+  }
+  assert.equal(state.slots[0].weapon.automaticShotsSinceGuarantee, 10);
+  state.slots[0].weapon.cooldown = 0;
+  tickGame(state, 0, () => 0.99);
+  assert.ok(["great", "critical"].includes(state.projectiles.at(-1).quality));
+  assert.equal(state.slots[0].weapon.automaticShotsSinceGuarantee, 0);
+
+  state.slots[0].weapon.automaticShotsSinceGuarantee = 7;
+  const restored = deserializeGameState(serializeGameState(state));
+  assert.equal(restored.slots[0].weapon.automaticShotsSinceGuarantee, 7);
+});
+
+test("labyrinth node 29 adds another slot on top of legacy and node 27 slots", () => {
+  const state = createGameState();
+  state.unlockedSlots = 5;
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth07",
+    "labyrinth25",
+    "labyrinth26",
+    "labyrinth27",
+    "labyrinth28"
+  ];
+  state.resources.shards = 3_500;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth29").ok, true);
+
+  assert.equal(state.unlockedSlots, 6);
+});
+
 test("maintenance nodes 22-24 apply 45% wear reduction, paid repair, and 70% floor", () => {
   const state = createGameState();
   state.resources.orders = 200;

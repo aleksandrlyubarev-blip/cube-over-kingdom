@@ -11,7 +11,7 @@ export const CUBE_LAYERS = [
 ];
 
 export const SAVE_VERSION = 5;
-const LABYRINTH_IMPLEMENTED_MAX = 27;
+const LABYRINTH_IMPLEMENTED_MAX = 30;
 const KING_ORDER_COOLDOWN_SECONDS = 60;
 const WORKER_PULSE_INTERVAL_SECONDS = 30;
 const WORKER_PULSE_INCOME_SECONDS = 10;
@@ -450,9 +450,12 @@ export function calculateWeaponShotDamage({
   qualityMultiplier,
   condition = 1,
   damageMultiplier = 1,
+  criticalDamageMultiplier = 1,
   hitWeakSpot = false
 }) {
-  const shotMultiplier = quality ? getQualityDamageMultiplier(type, quality) : qualityMultiplier;
+  const shotMultiplier = quality
+    ? getQualityDamageMultiplier(type, quality) * (quality.id === "critical" ? criticalDamageMultiplier : 1)
+    : qualityMultiplier;
   const weakMultiplier = hitWeakSpot ? 3 : 1;
   return Math.round(
     type.baseDamage *
@@ -616,7 +619,8 @@ export function buildWeapon(state, slotIndex = state.selectedSlot, typeId = stat
     level: 1,
     cooldown: type.reload * 0.38,
     condition: 1,
-    shots: 0
+    shots: 0,
+    automaticShotsSinceGuarantee: 0
   };
   slot.weapon = weapon;
   state.stats.builtWeapons += 1;
@@ -644,7 +648,8 @@ export function replaceWeapon(state, slotIndex = state.selectedSlot, typeId = st
     level: 1,
     cooldown: type.reload * 0.5,
     condition: 1,
-    shots: 0
+    shots: 0,
+    automaticShotsSinceGuarantee: 0
   };
   slot.weapon = weapon;
   state.stats.replacedWeapons += 1;
@@ -767,7 +772,7 @@ export function buyLabyrinthNode(state, nodeId) {
   const { node } = availability;
   spend(state, node.cost);
   state.labyrinth.purchasedNodeIds.push(node.id);
-  if (node.id === "labyrinth27") {
+  if (node.id === "labyrinth27" || node.id === "labyrinth29") {
     state.unlockedSlots = Math.min(state.slots.length, state.unlockedSlots + 1);
   }
   return { ok: true, node };
@@ -896,7 +901,9 @@ function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}
     return { ok: false, reason: "won" };
   }
   const type = getWeaponType(slot.weapon.typeId);
-  const quality = rollQuality(state, random);
+  const guarantee = state.labyrinth.purchasedNodeIds.includes("labyrinth30") &&
+    slot.weapon.automaticShotsSinceGuarantee >= 10;
+  const quality = guarantee ? rollGuaranteedQuality(state, random) : rollQuality(state, random);
   const canHitWeakSpot = canWeaponDamageLayer(type, state.cube.layerIndex, { hitWeakSpot: true });
   const hitWeakSpot = canHitWeakSpot && random() < 0.03 + state.modifiers.qualityBonus * 0.08;
   const target = pickTargetForWeapon(state, type, hitWeakSpot, random);
@@ -924,6 +931,11 @@ function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}
   }
   state.stats.shots += 1;
   slot.weapon.shots += 1;
+  if (guarantee) {
+    slot.weapon.automaticShotsSinceGuarantee = 0;
+  } else if (state.labyrinth.purchasedNodeIds.includes("labyrinth30")) {
+    slot.weapon.automaticShotsSinceGuarantee += 1;
+  }
   slot.weapon.cooldown += type.reload * Math.max(0.62, 1 - slot.weapon.level * 0.08);
   applyWeaponWear(state, slot.weapon, quality.id === "critical" ? 0.026 : 0.01);
   return { ok: true, damage, hitWeakSpot };
@@ -1227,6 +1239,14 @@ export function migrateSaveData(parsed) {
   state.savedAtMs = Number.isFinite(state.savedAtMs) ? Math.max(0, Math.floor(state.savedAtMs)) : null;
   state.offlineRngState = normalizeOfflineRngState(state.offlineRngState);
   state.labyrinth = normalizeLabyrinth(state.labyrinth);
+  for (const slot of state.slots) {
+    if (slot?.weapon) {
+      const counter = Number(slot.weapon.automaticShotsSinceGuarantee);
+      slot.weapon.automaticShotsSinceGuarantee = Number.isFinite(counter) && counter >= 0
+        ? Math.floor(counter)
+        : 0;
+    }
+  }
 
   state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
   state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
@@ -1449,8 +1469,23 @@ function resolveWeaponDamage(state, weapon, quality, hitWeakSpot) {
     quality,
     condition: weapon.condition,
     damageMultiplier: state.modifiers.damageMultiplier,
+    criticalDamageMultiplier: state.labyrinth.purchasedNodeIds.includes("labyrinth28") ? 1.25 : 1,
     hitWeakSpot
   });
+}
+
+function rollGuaranteedQuality(state, random) {
+  const adjusted = getAdjustedQualityTable(state.modifiers.qualityBonus, state.labyrinth.purchasedNodeIds)
+    .filter((quality) => quality.id === "great" || quality.id === "critical");
+  const total = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
+  let roll = random() * total;
+  for (const quality of adjusted) {
+    roll -= quality.chance;
+    if (roll <= 0) {
+      return quality;
+    }
+  }
+  return adjusted[adjusted.length - 1];
 }
 
 function rollQuality(state, random) {
