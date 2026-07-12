@@ -225,6 +225,34 @@ canvas.addEventListener("pointerup", (event) => {
   dragStart = null;
 });
 
+canvas.addEventListener("keydown", (event) => {
+  if (event.repeat || (event.key !== "Enter" && event.key !== " ")) {
+    return;
+  }
+  event.preventDefault();
+  tapForOrders(state);
+  renderUi();
+});
+
+document.querySelectorAll("dialog.game-dialog").forEach((dialog) => {
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    dialog.close("cancel");
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+  const openDialogs = document.querySelectorAll("dialog.game-dialog[open]");
+  const topDialog = openDialogs[openDialogs.length - 1];
+  if (topDialog) {
+    event.preventDefault();
+    topDialog.close("cancel");
+  }
+});
+
 canvas.addEventListener(
   "wheel",
   (event) => {
