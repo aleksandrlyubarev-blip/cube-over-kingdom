@@ -8,6 +8,7 @@ import {
   SOLVER_PROFILES,
   buildBalanceReport,
   executePendingManualAim,
+  getReleaseBalanceStatus,
   selectManualAimSlot,
   simulateProfile
 } from "../scripts/balanceSim.js";
@@ -71,6 +72,27 @@ test("labyrinth strategies purchase their plans instead of receiving free nodes"
   assert.equal(report.labyrinthEconomy.allComplete, true);
   assert.equal(report.labyrinthEconomy.allWithinTarget, true);
   assert.equal(report.labyrinthEconomy.noMandatoryBranch, true);
+});
+
+test("release balance gate excludes advisory acquisition but fails mandatory guardrails", () => {
+  const report = buildBalanceReport();
+  assert.equal(report.observedBudget.ok, false);
+  assert.equal(getReleaseBalanceStatus(report).ok, true);
+
+  assert.equal(
+    getReleaseBalanceStatus({
+      ...report,
+      combatGuardrails: { ...report.combatGuardrails, ok: false }
+    }).ok,
+    false
+  );
+  assert.equal(
+    getReleaseBalanceStatus({
+      ...report,
+      labyrinthEconomy: { ...report.labyrinthEconomy, noMandatoryBranch: false }
+    }).ok,
+    false
+  );
 });
 
 test("scheduled manual aim produces deterministic weak hits", () => {

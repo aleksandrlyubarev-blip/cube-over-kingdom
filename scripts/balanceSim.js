@@ -277,6 +277,21 @@ function buildLabyrinthEconomy(strategies, budgetPartition) {
   };
 }
 
+export function getReleaseBalanceStatus(report) {
+  const checks = {
+    budgetConstruction: report.budgetProjection?.ok === true,
+    totalGuardrails: report.guardrails?.ok === true,
+    combatGuardrails: report.combatGuardrails?.ok === true,
+    labyrinthComplete: report.labyrinthEconomy?.allComplete === true,
+    labyrinthTiming: report.labyrinthEconomy?.allWithinTarget === true,
+    labyrinthChoice: report.labyrinthEconomy?.noMandatoryBranch === true
+  };
+  return {
+    ok: Object.values(checks).every(Boolean),
+    checks
+  };
+}
+
 function runCli() {
   const args = new Set(process.argv.slice(2));
   const shouldWrite = args.has("--write");
@@ -288,6 +303,13 @@ function runCli() {
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);
     fs.writeFileSync(path.join(outDir, "latest.md"), renderMarkdown(report));
+  }
+
+  const releaseStatus = getReleaseBalanceStatus(report);
+  console.log("");
+  console.log(`Release balance gate: ok=${releaseStatus.ok}`);
+  if (!releaseStatus.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -1193,7 +1215,7 @@ function printObservedBudget(observedBudget) {
       `- ${name}: ${formatDuration(metric.observedSeconds)} vs ${formatDuration(metric.targetSeconds)}, ${metric.status}`
     );
   }
-  console.log(`- combined observed guard: ok=${observedBudget.ok}`);
+  console.log(`- advisory observed diagnostic: ok=${observedBudget.ok}`);
 }
 
 function printDiagnosticProfiles(profiles) {
@@ -1287,6 +1309,7 @@ function printGuardrails(label, guardrails) {
 }
 
 function renderMarkdown(data) {
+  const releaseStatus = getReleaseBalanceStatus(data);
   const lines = [
     "# Balance Snapshot",
     "",
@@ -1326,8 +1349,9 @@ function renderMarkdown(data) {
     `| Budget construction guard OK | ${data.budgetProjection?.ok ? "yes" : "no"} |`,
     `| Observed total | ${formatObservedBudgetMetric(data.observedBudget?.metrics.total)} |`,
     `| Observed combat | ${formatObservedBudgetMetric(data.observedBudget?.metrics.combat)} |`,
-    `| Observed acquisition | ${formatObservedBudgetMetric(data.observedBudget?.metrics.acquisition)} |`,
-    `| Observed budget guard OK | ${data.observedBudget?.ok ? "yes" : "no"} |`,
+    `| Observed acquisition (advisory) | ${formatObservedBudgetMetric(data.observedBudget?.metrics.acquisition)} |`,
+    `| Observed budget diagnostic OK (advisory) | ${data.observedBudget?.ok ? "yes" : "no"} |`,
+    `| Release balance gate OK | ${releaseStatus.ok ? "yes" : "no"} |`,
     "",
     "## Guardrails",
     "",

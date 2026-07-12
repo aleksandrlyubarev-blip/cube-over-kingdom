@@ -8,6 +8,7 @@ import {
   tapForOrders,
   tickGame
 } from "../src/gameState.js";
+import { SOLVER_PROFILES, simulateProfile } from "../scripts/balanceSim.js";
 
 test("new save reaches the first destroyed layer", () => {
   const state = createGameState();
@@ -32,4 +33,13 @@ test("new save reaches the first destroyed layer", () => {
   assert.equal(state.cube.layerIndex, 1);
   assert.equal(state.cube.layerHp[0], 0);
   assert.equal(state.cube.layerHp[1], CUBE_LAYERS[1].hp);
+});
+
+test("supervised passive profile reaches a full deterministic victory", () => {
+  const result = simulateProfile(SOLVER_PROFILES[0]);
+
+  assert.equal(result.completed, true);
+  assert.equal(result.stats.layersDestroyed, CUBE_LAYERS.length);
+  assert.equal(result.remainingHp, 0);
+  assert.ok(result.weapons.some((weapon) => weapon.type === "Осадная пушка"));
 });

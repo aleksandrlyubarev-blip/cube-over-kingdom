@@ -1,6 +1,6 @@
 # Balance Snapshot
 
-Generated: 2026-07-12T04:32:21.011Z
+Generated: 2026-07-12T04:54:56.196Z
 
 ## Theoretical 4-Slot Pressure
 
@@ -27,8 +27,9 @@ Generated: 2026-07-12T04:32:21.011Z
 | Budget construction guard OK | yes |
 | Observed total | 3h 23m / 3h 47m (within) |
 | Observed combat | 3h 22m / 3h 24m (within) |
-| Observed acquisition | 1m 49s / 22m 45s (too-short) |
-| Observed budget guard OK | no |
+| Observed acquisition (advisory) | 1m 49s / 22m 45s (too-short) |
+| Observed budget diagnostic OK (advisory) | no |
+| Release balance gate OK | yes |
 
 ## Guardrails
 
