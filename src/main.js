@@ -37,6 +37,7 @@ import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.j
 import { getVolume, isMuted, playSound, setMuted, setVolume, unlockAudio } from "./audio.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
+const CUTSCENE_SEEN_KEY = "cube-over-kingdom-final-cutscene-seen-v1";
 const EFFECTS_KEY = "cube-over-kingdom-effects-v1";
 const AUDIO_SETTINGS_KEY = "cube-over-kingdom-audio-v1";
 const EFFECT_LEVELS = new Set(["full", "low", "off"]);
@@ -82,6 +83,8 @@ const ui = {
   reducedMotionNotice: document.querySelector("#reducedMotionNotice"),
   saveButton: document.querySelector("#saveButton"),
   resetButton: document.querySelector("#resetButton"),
+  finalCutscene: document.querySelector("#finalCutscene"),
+  skipCutscene: document.querySelector("#skipCutscene"),
   victoryDialog: document.querySelector("#victoryDialog"),
   victoryStats: document.querySelector("#victoryStats"),
   victoryReset: document.querySelector("#victoryReset"),
@@ -110,6 +113,7 @@ let autosaveAccumulator = 0;
 let toastTimer = 0;
 let dragStart = null;
 let victoryShown = false;
+let cutsceneTimer = 0;
 let autosaveBackoff = 0;
 let pendingConfirmation = null;
 let sessionSuspended = document.visibilityState === "hidden";
@@ -235,6 +239,8 @@ ui.victoryReset.addEventListener("click", (event) => {
   ui.victoryDialog.close();
   resetGame();
 });
+
+ui.skipCutscene.addEventListener("click", finishCutscene);
 
 ui.offlineDialog.addEventListener("close", maybeShowVictory);
 
@@ -1219,12 +1225,45 @@ function showVictory() {
   saveGame();
 }
 
+function showFinalCutscene() {
+  saveGame();
+  try {
+    getStorage().setItem(CUTSCENE_SEEN_KEY, "true");
+  } catch {
+    // The victory save and cutscene still work when optional browser storage is unavailable.
+  }
+  ui.finalCutscene.classList.remove("hidden");
+  ui.finalCutscene.setAttribute("aria-hidden", "false");
+  ui.skipCutscene.focus();
+  cutsceneTimer = window.setTimeout(finishCutscene, 6500);
+}
+
+function finishCutscene() {
+  window.clearTimeout(cutsceneTimer);
+  cutsceneTimer = 0;
+  ui.finalCutscene.classList.add("hidden");
+  ui.finalCutscene.setAttribute("aria-hidden", "true");
+  showVictory();
+}
+
+function hasSeenFinalCutscene() {
+  try {
+    return getStorage().getItem(CUTSCENE_SEEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 function maybeShowVictory() {
   if (!state.won || victoryShown || ui.offlineDialog.open) {
     return;
   }
   victoryShown = true;
-  showVictory();
+  if (hasSeenFinalCutscene()) {
+    showVictory();
+    return;
+  }
+  showFinalCutscene();
 }
 
 function showOfflineRecap(recap) {
@@ -1375,6 +1414,11 @@ function resetGame() {
   victoryShown = false;
   autosaveBackoff = removed.ok ? 0 : 60;
   if (removed.ok) {
+    try {
+      getStorage().removeItem(CUTSCENE_SEEN_KEY);
+    } catch {
+      // The new siege can still start when optional browser storage is unavailable.
+    }
     saveGame();
   }
   renderUi();

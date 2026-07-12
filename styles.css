@@ -698,6 +698,111 @@ h1 {
   width: min(540px, calc(100vw - 28px));
 }
 
+.final-cutscene {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 24px;
+  color: #fff4d0;
+  text-align: center;
+  background: radial-gradient(circle at 50% 45%, #6b3151 0, #181522 36%, #08090d 78%);
+  animation: cutscene-fade-in 600ms ease-out both;
+}
+
+.final-cutscene.hidden {
+  display: none;
+}
+
+.cutscene-cube {
+  position: absolute;
+  width: min(34vw, 250px);
+  aspect-ratio: 1;
+  border: 3px solid rgba(255, 219, 146, 0.8);
+  transform: rotate(45deg);
+  box-shadow: 0 0 36px #ff9f8e, inset 0 0 60px #9c365e;
+  animation: cutscene-collapse 5.8s ease-in forwards;
+}
+
+.cutscene-flare {
+  position: absolute;
+  width: 20px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 80px 35px #ffc27b, 0 0 180px 80px #b6416c;
+  animation: cutscene-flare 5.8s ease-in-out forwards;
+}
+
+.cutscene-copy {
+  position: relative;
+  max-width: 620px;
+  margin-top: min(48vh, 330px);
+  text-shadow: 0 2px 12px #000;
+  animation: cutscene-copy 1s 1.2s ease-out both;
+}
+
+.cutscene-copy h2 {
+  margin: 8px 0;
+  font-size: clamp(24px, 4vw, 44px);
+}
+
+.cutscene-copy p {
+  margin: 0;
+  color: #d9ccbc;
+}
+
+.cutscene-kicker {
+  color: #f2bd68 !important;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.cutscene-skip {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  padding: 9px 15px;
+  border: 1px solid #8c7352;
+  border-radius: 6px;
+  color: #fff4d0;
+  background: rgba(15, 14, 18, 0.72);
+}
+
+@keyframes cutscene-fade-in {
+  from { opacity: 0; }
+}
+
+@keyframes cutscene-collapse {
+  0%, 55% { opacity: 1; transform: rotate(45deg) scale(1); }
+  85% { opacity: 1; transform: rotate(135deg) scale(0.12); }
+  100% { opacity: 0; transform: rotate(180deg) scale(0); }
+}
+
+@keyframes cutscene-flare {
+  0%, 60% { opacity: 0; transform: scale(0.2); }
+  78% { opacity: 1; transform: scale(2); }
+  100% { opacity: 0; transform: scale(7); }
+}
+
+@keyframes cutscene-copy {
+  from { opacity: 0; transform: translateY(18px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .final-cutscene,
+  .cutscene-cube,
+  .cutscene-flare,
+  .cutscene-copy {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+}
+
 .victory-stats,
 .offline-stats {
   display: grid;
