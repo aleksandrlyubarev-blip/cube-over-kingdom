@@ -36,6 +36,7 @@
           </div>
         </div>
         <div class="top-actions">
+          <button id="effectsButton" class="icon-button" type="button" title="Настройки эффектов" aria-label="Настройки эффектов">⚙</button>
           <button id="saveButton" class="icon-button" type="button" title="Сохранить">S</button>
           <button id="resetButton" class="reset-action danger" type="button" title="Начать заново">Новая</button>
         </div>
@@ -141,6 +142,29 @@
           <button class="plain-button" value="cancel" type="submit">Отмена</button>
           <button id="confirmAccept" class="primary-button" value="confirm" type="submit">Подтвердить</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="effectsDialog" class="game-dialog settings-dialog" aria-labelledby="effectsTitle">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="effectsTitle">Визуальные эффекты</h2>
+          <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
+        </header>
+        <label class="setting-row" for="effectsIntensity">
+          <span>
+            <strong>Интенсивность</strong>
+            <small id="effectsHint">Анимации и визуальные частицы</small>
+          </span>
+          <select id="effectsIntensity">
+            <option value="full">Полная</option>
+            <option value="low">Сниженная</option>
+            <option value="off">Выключена</option>
+          </select>
+        </label>
+        <p id="reducedMotionNotice" class="reduced-motion-notice hidden" role="status">
+          Системная настройка «Уменьшение движения» активна и отключает эффекты.
+        </p>
       </form>
     </dialog>
 

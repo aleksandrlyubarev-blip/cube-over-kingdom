@@ -34,7 +34,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -752,6 +753,61 @@ h1 {
 
 .confirm-dialog {
   width: min(520px, calc(100vw - 28px));
+}
+
+.settings-dialog {
+  width: min(520px, calc(100vw - 28px));
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 14px;
+}
+
+.setting-row span,
+.setting-row small {
+  display: block;
+}
+
+.setting-row small,
+.reduced-motion-notice {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.setting-row select {
+  min-width: 150px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: #2b251f;
+}
+
+.reduced-motion-notice {
+  margin: 0 14px 16px;
+  color: var(--gold-2);
+}
+
+:root[data-effects="low"] *,
+:root[data-effects="low"] *::before,
+:root[data-effects="low"] *::after {
+  animation-duration: 0.5s;
+  transition-duration: 0.1s;
+}
+
+:root[data-effects="off"] *,
+:root[data-effects="off"] *::before,
+:root[data-effects="off"] *::after {
+  animation-duration: 0.01ms;
+  animation-iteration-count: 1;
+  scroll-behavior: auto;
+  transition-duration: 0.01ms;
 }
 
 .confirm-copy {

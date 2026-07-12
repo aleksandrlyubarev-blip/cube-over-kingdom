@@ -36,6 +36,8 @@ import { readSave, removeSave, writeSave } from "./persistence.js";
 import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
+const EFFECTS_KEY = "cube-over-kingdom-effects-v1";
+const EFFECT_LEVELS = new Set(["full", "low", "off"]);
 const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
 
 const canvas = document.querySelector("#gameCanvas");
@@ -70,6 +72,11 @@ const ui = {
   hintPanel: document.querySelector("#hintPanel"),
   toast: document.querySelector("#toast"),
   zoneLine: document.querySelector("#zoneLine"),
+  effectsButton: document.querySelector("#effectsButton"),
+  effectsDialog: document.querySelector("#effectsDialog"),
+  effectsIntensity: document.querySelector("#effectsIntensity"),
+  effectsHint: document.querySelector("#effectsHint"),
+  reducedMotionNotice: document.querySelector("#reducedMotionNotice"),
   saveButton: document.querySelector("#saveButton"),
   resetButton: document.querySelector("#resetButton"),
   victoryDialog: document.querySelector("#victoryDialog"),
@@ -85,6 +92,8 @@ const ui = {
 };
 
 const getStorage = () => window.localStorage;
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+let effectsIntensity = loadEffectsIntensity();
 let persistenceStatus = { writeEnabled: true, message: null };
 let initialOfflineRecap = null;
 let shouldPersistLoadedState = false;
@@ -106,6 +115,7 @@ if (shouldPersistLoadedState) {
 }
 resizeCanvas();
 renderUi();
+renderEffectsSettings();
 showOfflineRecap(initialOfflineRecap);
 requestAnimationFrame(loop);
 
@@ -160,6 +170,19 @@ ui.labyrinthButton.addEventListener("click", () => {
   renderLabyrinth();
   ui.labyrinthDialog.showModal();
 });
+
+ui.effectsButton.addEventListener("click", () => {
+  renderEffectsSettings();
+  ui.effectsDialog.showModal();
+});
+
+ui.effectsIntensity.addEventListener("change", () => {
+  effectsIntensity = ui.effectsIntensity.value;
+  saveEffectsIntensity();
+  renderEffectsSettings();
+});
+
+reducedMotionQuery.addEventListener("change", renderEffectsSettings);
 
 ui.cameraSlider.addEventListener("input", () => {
   cameraOffset = Number(ui.cameraSlider.value);
@@ -450,7 +473,8 @@ function drawWeakSpot(metrics) {
   if (y < -40 || y > canvas.height * 0.72) {
     return;
   }
-  const pulse = 0.5 + Math.sin(state.time * 6) * 0.5;
+  const intensity = getEffectiveEffectsIntensity();
+  const pulse = intensity === "full" ? 0.5 + Math.sin(state.time * 6) * 0.5 : intensity === "low" ? 0.35 : 0;
   ctx.save();
   ctx.shadowColor = "#ffb56b";
   ctx.shadowBlur = 18 + pulse * 12;
@@ -517,7 +541,12 @@ function drawZoneBands(metrics) {
 }
 
 function drawProjectiles(width, height, metrics) {
-  for (const projectile of state.projectiles) {
+  const intensity = getEffectiveEffectsIntensity();
+  if (intensity === "off") {
+    return;
+  }
+  const projectiles = intensity === "low" ? state.projectiles.filter((_, index) => index % 2 === 0) : state.projectiles;
+  for (const projectile of projectiles) {
     const progress = Math.min(1, projectile.age / projectile.duration);
     const slotX = getSlotScreenX(projectile.fromSlot, width);
     const slotY = height * 0.82;
@@ -682,10 +711,15 @@ function drawBankedBlockPile(width, height) {
 }
 
 function drawFloatingTexts(width, height, metrics) {
+  const intensity = getEffectiveEffectsIntensity();
+  if (intensity === "off") {
+    return;
+  }
   ctx.font = `${14 * devicePixelRatio}px sans-serif`;
   ctx.textAlign = "center";
   ctx.lineWidth = 3 * devicePixelRatio;
-  for (const item of state.floatingTexts) {
+  const floatingTexts = intensity === "low" ? state.floatingTexts.filter((_, index) => index % 2 === 0) : state.floatingTexts;
+  for (const item of floatingTexts) {
     let x = item.x * width;
     let y = item.y * height;
     if (item.y < 0.7) {
@@ -736,6 +770,36 @@ function renderUi() {
   renderWeaponCards();
   renderActionPanel();
   renderHintPanel();
+}
+
+function getEffectiveEffectsIntensity() {
+  return reducedMotionQuery.matches ? "off" : effectsIntensity;
+}
+
+function loadEffectsIntensity() {
+  try {
+    const saved = getStorage().getItem(EFFECTS_KEY);
+    return EFFECT_LEVELS.has(saved) ? saved : "full";
+  } catch {
+    return "full";
+  }
+}
+
+function saveEffectsIntensity() {
+  try {
+    getStorage().setItem(EFFECTS_KEY, effectsIntensity);
+  } catch {
+    showToast("Не удалось сохранить настройки эффектов");
+  }
+}
+
+function renderEffectsSettings() {
+  const reduced = reducedMotionQuery.matches;
+  ui.effectsIntensity.value = effectsIntensity;
+  ui.effectsIntensity.disabled = reduced;
+  ui.effectsHint.textContent = reduced ? "Эффекты отключены системной настройкой" : "Анимации и визуальные частицы";
+  ui.reducedMotionNotice.classList.toggle("hidden", !reduced);
+  document.documentElement.dataset.effects = getEffectiveEffectsIntensity();
 }
 
 function renderSlots() {
