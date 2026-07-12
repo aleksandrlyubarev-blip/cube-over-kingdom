@@ -211,7 +211,7 @@ test("maintenance nodes reduce repair cost and weapon wear while preserving lega
   state.resources.orders = 1_000;
   state.resources.shards = 1_000;
   assert.equal(buildWeapon(state, 0, "stoneThrower").ok, true);
-  state.slots[0].weapon.condition = 0.5;
+  state.slots[0].weapon.condition = 0.8;
 
   assert.equal(repairWeapon(state, 0).ok, true);
   assert.equal(state.resources.orders, 920);
@@ -259,6 +259,68 @@ test("maintenance wear helper preserves the legacy manual condition floor", () =
   manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
 
   assert.equal(state.slots[0].weapon.condition, 0.25);
+});
+
+test("labyrinth maintenance nodes 22-24 purchase at exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth13", "labyrinth19", "labyrinth20", "labyrinth21"];
+  state.resources.shards = 16_200;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth22").ok, true);
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth23").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth24").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth22").ok, true);
+  assert.equal(state.resources.shards, 14_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth23").ok, true);
+  assert.equal(state.resources.shards, 9_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth24").ok, true);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("maintenance nodes 22-24 apply 45% wear reduction, paid repair, and 70% floor", () => {
+  const state = createGameState();
+  state.resources.orders = 200;
+  state.resources.shards = 20;
+  buildWeapon(state, 0, "ballista");
+  state.labyrinth.purchasedNodeIds = ["labyrinth20", "labyrinth21", "labyrinth22", "labyrinth23", "labyrinth24"];
+  state.slots[0].weapon.condition = 0.8;
+  state.slots[0].weapon.cooldown = 100;
+
+  tickGame(state, 1, () => 0.5);
+  assert.equal(state.slots[0].weapon.condition, 0.806);
+  assert.equal(state.resources.orders, 54.4);
+
+  state.slots[0].weapon.condition = 0.69;
+  state.slots[0].weapon.cooldown = 0;
+  manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+  assert.equal(state.slots[0].weapon.condition, 0.7);
+});
+
+test("legacy autoRepair stays free and online/offline paid repair matches without combat", () => {
+  const online = createGameState();
+  online.resources.orders = 100;
+  buildWeapon(online, 0, "stoneThrower");
+  online.labyrinth.purchasedNodeIds = ["labyrinth23"];
+  online.slots[0].weapon.condition = 0.5;
+  online.slots[0].weapon.cooldown = 100;
+  const offline = deserializeGameState(serializeGameState(online));
+
+  tickGame(online, 10, () => 0.5);
+  simulateOfflineProgress(offline, 10);
+  assert.equal(online.slots[0].weapon.condition, 0.56);
+  assert.equal(offline.slots[0].weapon.condition, online.slots[0].weapon.condition);
+  assert.equal(offline.resources.orders, online.resources.orders);
+
+  const legacy = createGameState();
+  legacy.resources.orders = 100;
+  buildWeapon(legacy, 0, "stoneThrower");
+  legacy.modifiers.autoRepair = true;
+  legacy.labyrinth.purchasedNodeIds = ["labyrinth23"];
+  legacy.slots[0].weapon.condition = 0.5;
+  legacy.slots[0].weapon.cooldown = 100;
+  tickGame(legacy, 1, () => 0.5);
+  assert.equal(legacy.slots[0].weapon.condition, 0.512);
+  assert.equal(legacy.resources.orders, 65);
 });
 
 test("labyrinth collection nodes 16-18 give equal results for large and small ticks", () => {

@@ -11,7 +11,7 @@ export const CUBE_LAYERS = [
 ];
 
 export const SAVE_VERSION = 5;
-const LABYRINTH_IMPLEMENTED_MAX = 21;
+const LABYRINTH_IMPLEMENTED_MAX = 24;
 const KING_ORDER_COOLDOWN_SECONDS = 60;
 const WORKER_PULSE_INTERVAL_SECONDS = 30;
 const WORKER_PULSE_INCOME_SECONDS = 10;
@@ -772,10 +772,16 @@ export function buyLabyrinthNode(state, nodeId) {
 
 function applyWeaponWear(state, weapon, amount, baseMinimumCondition = 0.2) {
   ensureLabyrinth(state);
-  const wearMultiplier = state.labyrinth.purchasedNodeIds.includes("labyrinth20") ? 0.85 : 1;
-  const minimumCondition = state.labyrinth.purchasedNodeIds.includes("labyrinth21")
-    ? Math.max(0.4, baseMinimumCondition)
-    : baseMinimumCondition;
+  const wearMultiplier = state.labyrinth.purchasedNodeIds.includes("labyrinth22")
+    ? 0.55
+    : state.labyrinth.purchasedNodeIds.includes("labyrinth20")
+      ? 0.85
+      : 1;
+  const minimumCondition = state.labyrinth.purchasedNodeIds.includes("labyrinth24")
+    ? Math.max(0.7, baseMinimumCondition)
+    : state.labyrinth.purchasedNodeIds.includes("labyrinth21")
+      ? Math.max(0.4, baseMinimumCondition)
+      : baseMinimumCondition;
   weapon.condition = Math.max(minimumCondition, weapon.condition - amount * wearMultiplier);
 }
 
@@ -842,9 +848,7 @@ export function tickGame(state, dt, random = Math.random) {
     if (!slot.weapon) {
       continue;
     }
-    if (state.modifiers.autoRepair && slot.weapon.condition < 1) {
-      slot.weapon.condition = Math.min(1, slot.weapon.condition + dt * 0.012);
-    }
+    applyAutoRepair(state, slot.weapon, dt);
     slot.weapon.cooldown -= dt;
     if (slot.weapon.cooldown <= 0) {
       resolveAutomaticWeaponShot(state, slot, slotIndex, random);
@@ -1040,9 +1044,7 @@ function advanceOfflineTime(state, seconds, random) {
     if (!weapon) {
       continue;
     }
-    if (state.modifiers.autoRepair && weapon.condition < 1) {
-      weapon.condition = Math.min(1, weapon.condition + seconds * 0.012);
-    }
+    applyAutoRepair(state, weapon, seconds);
     weapon.cooldown -= seconds;
   }
 
@@ -1053,6 +1055,30 @@ function advanceOfflineTime(state, seconds, random) {
     const due = Math.max(0, Math.floor(accrued + 1e-9));
     bank.autoCollectCredit = Math.max(0, accrued - due);
     collectBankedBlocks(state, due, { silent: true });
+  }
+}
+
+function applyAutoRepair(state, weapon, seconds) {
+  if (seconds <= 0 || weapon.condition >= 1) {
+    return;
+  }
+  ensureLabyrinth(state);
+  const minimumCondition = state.labyrinth.purchasedNodeIds.includes("labyrinth24") ? 0.7 : 0;
+  if (state.modifiers.autoRepair) {
+    weapon.condition = Math.min(1, weapon.condition + seconds * 0.012);
+    return;
+  }
+  if (!state.labyrinth.purchasedNodeIds.includes("labyrinth23")) {
+    return;
+  }
+  const repairable = Math.min(weapon.condition + seconds * 0.006, 1) - weapon.condition;
+  const amount = Math.min(repairable, Math.max(0, state.resources.orders) / 100);
+  state.resources.orders -= amount * 100;
+  weapon.condition = Math.min(1, weapon.condition + amount);
+  if (weapon.condition < minimumCondition && state.resources.orders > 0) {
+    const floorRepair = Math.min(minimumCondition - weapon.condition, state.resources.orders / 100);
+    state.resources.orders -= floorRepair * 100;
+    weapon.condition += floorRepair;
   }
 }
 
