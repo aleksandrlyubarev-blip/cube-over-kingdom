@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "balance": "node scripts/balanceSim.js --write",
+    "smoke": "node --test tests/smoke.test.js",
     "test": "node --test",
     "start": "python3 -m http.server 5173 --bind 127.0.0.1"
   }
