@@ -11,7 +11,7 @@ export const CUBE_LAYERS = [
 ];
 
 export const SAVE_VERSION = 5;
-const LABYRINTH_IMPLEMENTED_MAX = 24;
+const LABYRINTH_IMPLEMENTED_MAX = 27;
 const KING_ORDER_COOLDOWN_SECONDS = 60;
 const WORKER_PULSE_INTERVAL_SECONDS = 30;
 const WORKER_PULSE_INCOME_SECONDS = 10;
@@ -432,8 +432,8 @@ export function getWeaponBuildCost(state, type) {
   };
 }
 
-export function getAverageQualityMultiplier(qualityBonus = 0) {
-  const adjusted = getAdjustedQualityTable(qualityBonus);
+export function getAverageQualityMultiplier(qualityBonus = 0, purchasedNodeIds = []) {
+  const adjusted = getAdjustedQualityTable(qualityBonus, purchasedNodeIds);
   const totalChance = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
   const weighted = adjusted.reduce((sum, quality) => sum + quality.multiplier * quality.chance, 0);
   return weighted / totalChance;
@@ -496,8 +496,8 @@ export function estimateWeaponDps(type, options = {}) {
   return ((1 - weakHitChance) * normalDamage + weakHitChance * weakDamage) / reload;
 }
 
-export function getAverageShotMultiplier(type, qualityBonus = 0) {
-  const adjusted = getAdjustedQualityTable(qualityBonus);
+export function getAverageShotMultiplier(type, qualityBonus = 0, purchasedNodeIds = []) {
+  const adjusted = getAdjustedQualityTable(qualityBonus, purchasedNodeIds);
   const totalChance = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
   const weighted = adjusted.reduce((sum, quality) => sum + getQualityDamageMultiplier(type, quality) * quality.chance, 0);
   return weighted / totalChance;
@@ -767,6 +767,9 @@ export function buyLabyrinthNode(state, nodeId) {
   const { node } = availability;
   spend(state, node.cost);
   state.labyrinth.purchasedNodeIds.push(node.id);
+  if (node.id === "labyrinth27") {
+    state.unlockedSlots = Math.min(state.slots.length, state.unlockedSlots + 1);
+  }
   return { ok: true, node };
 }
 
@@ -1451,7 +1454,7 @@ function resolveWeaponDamage(state, weapon, quality, hitWeakSpot) {
 }
 
 function rollQuality(state, random) {
-  const adjusted = getAdjustedQualityTable(state.modifiers.qualityBonus);
+  const adjusted = getAdjustedQualityTable(state.modifiers.qualityBonus, state.labyrinth.purchasedNodeIds);
   const total = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
   let roll = random() * total;
   for (const quality of adjusted) {
@@ -1463,16 +1466,25 @@ function rollQuality(state, random) {
   return adjusted[adjusted.length - 1];
 }
 
-function getAdjustedQualityTable(bonus) {
-  return QUALITY_TABLE.map((quality) => {
+function getAdjustedQualityTable(bonus, purchasedNodeIds = []) {
+  const adjusted = QUALITY_TABLE.map((quality) => {
     if (quality.id === "poor") {
       return { ...quality, chance: Math.max(0.03, quality.chance - bonus * 0.55) };
     }
     if (quality.id === "great" || quality.id === "critical") {
       return { ...quality, chance: quality.chance + bonus * (quality.id === "critical" ? 0.34 : 0.5) };
     }
-    return quality;
+    return { ...quality };
   });
+  if (purchasedNodeIds.includes("labyrinth25")) {
+    adjusted.find((quality) => quality.id === "poor").chance -= 0.05;
+    adjusted.find((quality) => quality.id === "good").chance += 0.05;
+  }
+  if (purchasedNodeIds.includes("labyrinth26")) {
+    adjusted.find((quality) => quality.id === "normal").chance -= 0.02;
+    adjusted.find((quality) => quality.id === "critical").chance += 0.02;
+  }
+  return adjusted;
 }
 
 function pickTargetForWeapon(state, type, hitWeakSpot, random) {

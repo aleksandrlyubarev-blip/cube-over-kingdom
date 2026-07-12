@@ -8,6 +8,7 @@ import {
   LEGACY_V1_LAYER_HP,
   MAX_VISUAL_BLOCKS,
   OFFLINE_PROGRESS_CAP_SECONDS,
+  QUALITY_TABLE,
   SAVE_VERSION,
   addBlocksToBank,
   collectBankedBlocks,
@@ -35,6 +36,7 @@ import {
   collectBlock,
   createGameState,
   getAverageQualityMultiplier,
+  getAverageShotMultiplier,
   getRemainingCubeHp,
   getWeaponType,
   manualAimAt,
@@ -275,6 +277,60 @@ test("labyrinth maintenance nodes 22-24 purchase at exact costs and prerequisite
   assert.equal(state.resources.shards, 9_000);
   assert.equal(buyLabyrinthNode(state, "labyrinth24").ok, true);
   assert.equal(state.resources.shards, 0);
+});
+
+test("labyrinth quality nodes 25-27 use exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth07"];
+  state.resources.shards = 1_600;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth26").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth27").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth25").ok, true);
+  assert.equal(state.resources.shards, 1_400);
+  assert.equal(buyLabyrinthNode(state, "labyrinth26").ok, true);
+  assert.equal(state.resources.shards, 800);
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").ok, true);
+  assert.equal(state.resources.shards, 0);
+  assert.equal(state.unlockedSlots, 3);
+  assert.equal(state.unlockedSlots <= state.slots.length, true);
+});
+
+test("labyrinth quality nodes transfer exact probabilities over legacy quality bonus", () => {
+  const state = createGameState();
+  state.modifiers.qualityBonus = 0.14;
+  state.labyrinth.purchasedNodeIds = ["labyrinth25", "labyrinth26"];
+
+  const type = getWeaponType("ballista");
+  const chances = [0.013, 0.5, 0.28, 0.16, 0.0876];
+  const multipliers = QUALITY_TABLE.map((quality) =>
+    quality.id === "critical" ? type.critMultiplier : quality.multiplier
+  );
+  const expected = chances.reduce((sum, chance, index) => sum + chance * multipliers[index], 0) / 1.0406;
+  assert.equal(getAverageShotMultiplier(type, state.modifiers.qualityBonus, state.labyrinth.purchasedNodeIds), expected);
+});
+
+test("labyrinth node 27 unlocks one slot once and save round-trip does not duplicate it", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth25", "labyrinth26"];
+  state.resources.shards = 800;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").ok, true);
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").reason, "node");
+  const restored = deserializeGameState(serializeGameState(state));
+  assert.equal(restored.unlockedSlots, 3);
+  assert.equal(restored.slots.length, state.slots.length);
+});
+
+test("labyrinth node 27 adds a slot on top of legacy slot upgrades", () => {
+  const state = createGameState();
+  state.unlockedSlots = 4;
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth25", "labyrinth26"];
+  state.resources.shards = 800;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").ok, true);
+
+  assert.equal(state.unlockedSlots, 5);
 });
 
 test("maintenance nodes 22-24 apply 45% wear reduction, paid repair, and 70% floor", () => {
