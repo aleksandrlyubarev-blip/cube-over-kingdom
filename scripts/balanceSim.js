@@ -8,6 +8,7 @@ import {
   UPGRADE_NODES,
   WEAPON_TYPES,
   buildWeapon,
+  buyLabyrinthNode,
   buyUpgradeNode,
   canAfford,
   canBuyUpgradeNode,
@@ -124,9 +125,68 @@ export const DIAGNOSTIC_PROFILES = [
   }
 ];
 
+export const COLLECTION_SCENARIOS = [
+  { id: "manual", name: "Ручной сбор", collectFraction: 1, purchasedNodeIds: [] },
+  { id: "auto10", name: "Автосбор 10%", collectFraction: 0, purchasedNodeIds: ["labyrinth13"] },
+  {
+    id: "auto25",
+    name: "Автосбор 25%",
+    collectFraction: 0,
+    purchasedNodeIds: ["labyrinth13", "labyrinth14"]
+  },
+  {
+    id: "auto50",
+    name: "Автосбор 50%",
+    collectFraction: 0,
+    purchasedNodeIds: ["labyrinth13", "labyrinth14", "labyrinth15", "labyrinth16"]
+  },
+  {
+    id: "auto100",
+    name: "Автосбор 100%",
+    collectFraction: 0,
+    purchasedNodeIds: [
+      "labyrinth13",
+      "labyrinth14",
+      "labyrinth15",
+      "labyrinth16",
+      "labyrinth17",
+      "labyrinth18"
+    ]
+  }
+];
+
+export const LABYRINTH_STRATEGIES = [
+  {
+    id: "manual-branch",
+    name: "Ручная ветка",
+    branch: "manual",
+    labyrinthPlan: ["labyrinth01", "labyrinth02"]
+  },
+  {
+    id: "automation-branch",
+    name: "Ветка автоматизации",
+    branch: "automation",
+    labyrinthPlan: ["labyrinth01", "labyrinth07"]
+  },
+  {
+    id: "collection-branch",
+    name: "Ветка сбора",
+    branch: "collection",
+    labyrinthPlan: ["labyrinth01", "labyrinth13", "labyrinth14", "labyrinth15"]
+  },
+  {
+    id: "quality-branch",
+    name: "Ветка качества",
+    branch: "quality",
+    labyrinthPlan: ["labyrinth01", "labyrinth07", "labyrinth25"]
+  }
+];
+
 export function buildBalanceReport(options = {}) {
   const solverProfiles = options.solverProfiles ?? SOLVER_PROFILES;
   const diagnosticProfiles = options.diagnosticProfiles ?? DIAGNOSTIC_PROFILES;
+  const collectionScenarios = options.collectionScenarios ?? COLLECTION_SCENARIOS;
+  const labyrinthStrategies = options.labyrinthStrategies ?? LABYRINTH_STRATEGIES;
   const budgetPartition = options.budgetPartition ?? calculateBudgetPartition();
   const currentLayerHp = options.layerHp ?? CUBE_LAYERS.map((layer) => layer.hp);
   const hpSolverIterations = buildHpSolverIterations(
@@ -144,6 +204,30 @@ export function buildBalanceReport(options = {}) {
     dpsTable: buildDpsTable(),
     stagePressure: buildStagePressureTable(),
     profiles: currentIteration.profiles,
+    collectionScenarios: collectionScenarios.map((scenario) =>
+      simulateProfile(
+        {
+          ...solverProfiles[0],
+          ...scenario,
+          purchasedNodeIds: scenario.purchasedNodeIds
+        },
+        currentLayerHp
+      )
+    ),
+    labyrinthEconomy: buildLabyrinthEconomy(
+      labyrinthStrategies.map((strategy, index) => ({
+        ...simulateProfile(
+          {
+            ...solverProfiles[0],
+            ...strategy,
+            seed: 5101 + index
+          },
+          currentLayerHp
+        ),
+        branch: strategy.branch
+      })),
+      budgetPartition
+    ),
     diagnosticProfiles: diagnosticProfiles.map((profile) => simulateProfile(profile, currentLayerHp)),
     budgetPartition,
     budgetProjection: currentIteration.budgetProjection,
@@ -161,6 +245,53 @@ export function buildBalanceReport(options = {}) {
   };
 }
 
+function buildLabyrinthEconomy(strategies, budgetPartition) {
+  const toleranceRatio = 0.25;
+  const targetSeconds = budgetPartition.totalTargetSeconds;
+  const minSeconds = Math.round(targetSeconds * (1 - toleranceRatio));
+  const maxSeconds = Math.round(targetSeconds * (1 + toleranceRatio));
+  const rows = strategies.map((strategy) => ({
+    ...strategy,
+    targetStatus: !strategy.completed || !strategy.labyrinthPlanComplete
+      ? "not-finished"
+      : strategy.elapsedSeconds < minSeconds
+        ? "too-short"
+        : strategy.elapsedSeconds > maxSeconds
+          ? "too-long"
+          : "within"
+  }));
+  const viableBranches = new Set(
+    rows
+      .filter((row) => row.completed && row.labyrinthPlanComplete && row.targetStatus === "within")
+      .map((row) => row.branch)
+  );
+  return {
+    targetSeconds,
+    minSeconds,
+    maxSeconds,
+    toleranceRatio,
+    rows,
+    allComplete: rows.every((row) => row.completed && row.labyrinthPlanComplete),
+    allWithinTarget: rows.every((row) => row.targetStatus === "within"),
+    noMandatoryBranch: viableBranches.size >= 3
+  };
+}
+
+export function getReleaseBalanceStatus(report) {
+  const checks = {
+    budgetConstruction: report.budgetProjection?.ok === true,
+    totalGuardrails: report.guardrails?.ok === true,
+    combatGuardrails: report.combatGuardrails?.ok === true,
+    labyrinthComplete: report.labyrinthEconomy?.allComplete === true,
+    labyrinthTiming: report.labyrinthEconomy?.allWithinTarget === true,
+    labyrinthChoice: report.labyrinthEconomy?.noMandatoryBranch === true
+  };
+  return {
+    ok: Object.values(checks).every(Boolean),
+    checks
+  };
+}
+
 function runCli() {
   const args = new Set(process.argv.slice(2));
   const shouldWrite = args.has("--write");
@@ -172,6 +303,13 @@ function runCli() {
     fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, "latest.json"), `${JSON.stringify(report, null, 2)}\n`);
     fs.writeFileSync(path.join(outDir, "latest.md"), renderMarkdown(report));
+  }
+
+  const releaseStatus = getReleaseBalanceStatus(report);
+  console.log("");
+  console.log(`Release balance gate: ok=${releaseStatus.ok}`);
+  if (!releaseStatus.ok) {
+    process.exitCode = 1;
   }
 }
 
@@ -225,6 +363,7 @@ function buildStagePressureTable() {
 export function simulateProfile(profile, layerHpOverride = null) {
   const rng = createRng(profile.seed);
   const state = createGameState();
+  state.labyrinth.purchasedNodeIds = [...(profile.purchasedNodeIds ?? [])];
   if (layerHpOverride) {
     state.cube.layerHp = [...layerHpOverride];
     state.cube.totalHp = layerHpOverride.reduce((sum, hp) => sum + hp, 0);
@@ -233,6 +372,7 @@ export function simulateProfile(profile, layerHpOverride = null) {
   const samples = [];
   const layerDurations = [];
   const events = [];
+  const labyrinthSpent = { orders: 0, shards: 0 };
   let nextCollect = profile.collectEvery;
   let nextSpend = 0;
   let nextSample = profile.sampleEvery;
@@ -334,7 +474,7 @@ export function simulateProfile(profile, layerHpOverride = null) {
       }
 
       if (activeElapsedSeconds >= nextSpend) {
-        spendForProfile(state, profile, events);
+        spendForProfile(state, profile, events, labyrinthSpent);
         openCombatIfReady(currentLayerTimer, state);
         nextSpend += profile.spendEvery;
       }
@@ -410,6 +550,11 @@ export function simulateProfile(profile, layerHpOverride = null) {
           condition: round(slot.weapon.condition)
         })),
       purchasedNodes: [...state.purchasedNodes],
+      purchasedLabyrinthNodes: [...state.labyrinth.purchasedNodeIds],
+      labyrinthPlanComplete: (profile.labyrinthPlan ?? []).every((nodeId) =>
+        state.labyrinth.purchasedNodeIds.includes(nodeId)
+      ),
+      labyrinthSpent,
       layerDurations,
       samples,
       events: events.slice(-18)
@@ -601,7 +746,7 @@ function copyResources(resources) {
   };
 }
 
-function spendForProfile(state, profile, events) {
+function spendForProfile(state, profile, events, labyrinthSpent) {
   let actions = 0;
   while (actions < 8) {
     const starter = ensureStarterWeapon(state, events);
@@ -615,6 +760,24 @@ function spendForProfile(state, profile, events) {
       if (!replacement) {
         return;
       }
+      actions += 1;
+      continue;
+    }
+
+    const plannedNodeId = (profile.labyrinthPlan ?? []).find(
+      (nodeId) => !state.labyrinth.purchasedNodeIds.includes(nodeId)
+    );
+    if (plannedNodeId) {
+      const result = buyLabyrinthNode(state, plannedNodeId);
+      if (!result.ok) {
+        if (result.reason === "cost") {
+          return;
+        }
+        throw new Error(`Invalid labyrinth plan at ${plannedNodeId}: ${result.reason}`);
+      }
+      labyrinthSpent.orders += result.node.cost.orders;
+      labyrinthSpent.shards += result.node.cost.shards;
+      events.push(`[${formatDuration(state.time)}] labyrinth node ${result.node.name}`);
       actions += 1;
       continue;
     }
@@ -978,6 +1141,8 @@ function printReport(data) {
   printGuardrails("Current total guardrails", data.guardrails);
   printGuardrails("Current combat guardrails", data.combatGuardrails);
   printHardGateEconomy(data.hardGateEconomy);
+  printLabyrinthEconomy(data.labyrinthEconomy);
+  printCollectionScenarios(data.collectionScenarios);
   printDiagnosticProfiles(data.diagnosticProfiles);
 
   if (data.hpReshuffle) {
@@ -1025,6 +1190,20 @@ function printReport(data) {
   }
 }
 
+function printLabyrinthEconomy(economy) {
+  if (!economy?.rows.length) {
+    return;
+  }
+  console.log("");
+  console.log(
+    `Labyrinth branch economy (target ${formatDuration(economy.minSeconds)}-${formatDuration(economy.maxSeconds)}):`
+  );
+  for (const row of economy.rows) {
+    console.log(`- ${row.name}: ${row.completed ? "win" : "not finished"} in ${row.elapsed}, ${row.targetStatus}`);
+  }
+  console.log(`- no mandatory branch: ${economy.noMandatoryBranch}`);
+}
+
 function printObservedBudget(observedBudget) {
   if (!observedBudget) {
     return;
@@ -1036,7 +1215,7 @@ function printObservedBudget(observedBudget) {
       `- ${name}: ${formatDuration(metric.observedSeconds)} vs ${formatDuration(metric.targetSeconds)}, ${metric.status}`
     );
   }
-  console.log(`- combined observed guard: ok=${observedBudget.ok}`);
+  console.log(`- advisory observed diagnostic: ok=${observedBudget.ok}`);
 }
 
 function printDiagnosticProfiles(profiles) {
@@ -1054,6 +1233,22 @@ function printDiagnosticProfiles(profiles) {
       )}% (${formatDuration(profile.activeElapsedSeconds)} active + ${formatDuration(
         profile.offlineElapsedSeconds
       )} catch-up)`
+    );
+  }
+}
+
+function printCollectionScenarios(scenarios) {
+  if (!scenarios?.length) {
+    return;
+  }
+  console.log("");
+  console.log("Collection scenarios (excluded from solver guardrails):");
+  for (const scenario of scenarios) {
+    console.log(
+      `- ${scenario.name}: ${scenario.completed ? "win" : "not finished"} in ${scenario.elapsed}, ` +
+        `combat ${scenario.combatElapsed}, acquisition ${scenario.acquisitionWait}, ` +
+        `collected ${formatNumber(scenario.stats.collectedBlocks)} blocks / ` +
+        `${formatNumber(scenario.stats.shardsCollected)} shards`
     );
   }
 }
@@ -1114,6 +1309,7 @@ function printGuardrails(label, guardrails) {
 }
 
 function renderMarkdown(data) {
+  const releaseStatus = getReleaseBalanceStatus(data);
   const lines = [
     "# Balance Snapshot",
     "",
@@ -1153,8 +1349,9 @@ function renderMarkdown(data) {
     `| Budget construction guard OK | ${data.budgetProjection?.ok ? "yes" : "no"} |`,
     `| Observed total | ${formatObservedBudgetMetric(data.observedBudget?.metrics.total)} |`,
     `| Observed combat | ${formatObservedBudgetMetric(data.observedBudget?.metrics.combat)} |`,
-    `| Observed acquisition | ${formatObservedBudgetMetric(data.observedBudget?.metrics.acquisition)} |`,
-    `| Observed budget guard OK | ${data.observedBudget?.ok ? "yes" : "no"} |`,
+    `| Observed acquisition (advisory) | ${formatObservedBudgetMetric(data.observedBudget?.metrics.acquisition)} |`,
+    `| Observed budget diagnostic OK (advisory) | ${data.observedBudget?.ok ? "yes" : "no"} |`,
+    `| Release balance gate OK | ${releaseStatus.ok ? "yes" : "no"} |`,
     "",
     "## Guardrails",
     "",
@@ -1291,6 +1488,33 @@ function renderMarkdown(data) {
     }
   }
 
+  lines.push(
+    "",
+    "## Labyrinth Branch Economy",
+    "",
+    `Target full-run range: ${formatDuration(data.labyrinthEconomy.minSeconds)}-${formatDuration(
+      data.labyrinthEconomy.maxSeconds
+    )} (±${Math.round(data.labyrinthEconomy.toleranceRatio * 100)}%).`,
+    "",
+    "| Strategy | Branch | Investment | Result | Total | Combat | Acquisition | Target status |",
+    "| --- | --- | ---: | --- | ---: | ---: | ---: | --- |"
+  );
+  for (const strategy of data.labyrinthEconomy.rows) {
+    lines.push(
+      `| ${strategy.name} | ${strategy.branch} | ${strategy.labyrinthSpent.orders} orders / ${
+        strategy.labyrinthSpent.shards
+      } shards | ${strategy.completed && strategy.labyrinthPlanComplete ? "win" : "not finished"} | ${
+        strategy.elapsed
+      } | ${strategy.combatElapsed} | ${strategy.acquisitionWait} | ${strategy.targetStatus} |`
+    );
+  }
+  lines.push(
+    "",
+    `All strategies complete: ${data.labyrinthEconomy.allComplete ? "yes" : "no"}.`,
+    `All strategies within target: ${data.labyrinthEconomy.allWithinTarget ? "yes" : "no"}.`,
+    `No mandatory single branch: ${data.labyrinthEconomy.noMandatoryBranch ? "yes" : "no"}.`
+  );
+
   lines.push("", "## Profiles", "");
   for (const profile of data.profiles) {
     lines.push(
@@ -1326,6 +1550,21 @@ function renderMarkdown(data) {
       lines.push("| none | - | - |");
     }
     lines.push("");
+  }
+
+  lines.push(
+    "",
+    "## Collection Scenarios (Excluded From Solver Guardrails)",
+    "",
+    "| Scenario | Result | Total | Combat | Acquisition | Collected blocks | Shards collected |",
+    "| --- | --- | ---: | ---: | ---: | ---: | ---: |"
+  );
+  for (const scenario of data.collectionScenarios ?? []) {
+    lines.push(
+      `| ${scenario.name} | ${scenario.completed ? "win" : "not finished"} | ${scenario.elapsed} | ${
+        scenario.combatElapsed
+      } | ${scenario.acquisitionWait} | ${scenario.stats.collectedBlocks} | ${scenario.stats.shardsCollected} |`
+    );
   }
 
   lines.push("", "## Diagnostics (Excluded From Solver Guardrails)", "");

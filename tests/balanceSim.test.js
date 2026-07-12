@@ -4,8 +4,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   DIAGNOSTIC_PROFILES,
+  LABYRINTH_STRATEGIES,
   SOLVER_PROFILES,
+  buildBalanceReport,
   executePendingManualAim,
+  getReleaseBalanceStatus,
   selectManualAimSlot,
   simulateProfile
 } from "../scripts/balanceSim.js";
@@ -36,6 +39,58 @@ test("solver profiles name supervised passive play and exclude diagnostics", () 
   );
   assert.equal(
     SOLVER_PROFILES.some((profile) => profile.id === "neglectful3x30"),
+    false
+  );
+});
+
+test("labyrinth strategies purchase their plans instead of receiving free nodes", () => {
+  assert.equal(
+    LABYRINTH_STRATEGIES.every((strategy) => Array.isArray(strategy.labyrinthPlan)),
+    true
+  );
+
+  const noTime = simulateProfile({
+    ...SOLVER_PROFILES[0],
+    maxSeconds: 0,
+    labyrinthPlan: ["labyrinth01", "labyrinth07"]
+  });
+  assert.deepEqual(noTime.purchasedLabyrinthNodes, []);
+  assert.deepEqual(noTime.labyrinthSpent, { orders: 0, shards: 0 });
+
+  const automation = LABYRINTH_STRATEGIES.find((strategy) => strategy.branch === "automation");
+  const completed = simulateProfile({ ...SOLVER_PROFILES[0], ...automation });
+  assert.deepEqual(completed.purchasedLabyrinthNodes, automation.labyrinthPlan);
+  assert.deepEqual(completed.labyrinthSpent, { orders: 150, shards: 0 });
+
+  for (const strategy of LABYRINTH_STRATEGIES) {
+    const result = simulateProfile({ ...SOLVER_PROFILES[0], ...strategy });
+    assert.equal(result.labyrinthPlanComplete, true, strategy.id);
+    assert.equal(result.completed, true, strategy.id);
+  }
+
+  const report = buildBalanceReport();
+  assert.equal(report.labyrinthEconomy.allComplete, true);
+  assert.equal(report.labyrinthEconomy.allWithinTarget, true);
+  assert.equal(report.labyrinthEconomy.noMandatoryBranch, true);
+});
+
+test("release balance gate excludes advisory acquisition but fails mandatory guardrails", () => {
+  const report = buildBalanceReport();
+  assert.equal(report.observedBudget.ok, false);
+  assert.equal(getReleaseBalanceStatus(report).ok, true);
+
+  assert.equal(
+    getReleaseBalanceStatus({
+      ...report,
+      combatGuardrails: { ...report.combatGuardrails, ok: false }
+    }).ok,
+    false
+  );
+  assert.equal(
+    getReleaseBalanceStatus({
+      ...report,
+      labyrinthEconomy: { ...report.labyrinthEconomy, noMandatoryBranch: false }
+    }).ok,
     false
   );
 });

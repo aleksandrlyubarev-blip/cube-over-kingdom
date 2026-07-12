@@ -1,3 +1,5 @@
+import { getLabyrinthNode, getLabyrinthNodeVisibility } from "./upgradeLabyrinth.js";
+
 // HP слоёв: combat-paced вектор из balance-солвера (90% боевого бюджета,
 // 4-я итерация, сошёлся). Пассивный профиль ~3ч25м, оптимизатор ~1ч50м.
 export const CUBE_LAYERS = [
@@ -8,7 +10,11 @@ export const CUBE_LAYERS = [
   { id: "heart", name: "Сердце куба", hp: 4600000, color: "#5d3d58" }
 ];
 
-export const SAVE_VERSION = 4;
+export const SAVE_VERSION = 5;
+const LABYRINTH_IMPLEMENTED_MAX = 30;
+const KING_ORDER_COOLDOWN_SECONDS = 60;
+const WORKER_PULSE_INTERVAL_SECONDS = 30;
+const WORKER_PULSE_INCOME_SECONDS = 10;
 export const MAX_VISUAL_BLOCKS = 96;
 export const AUTO_COLLECT_RATE = 8;
 export const OFFLINE_PROGRESS_CAP_SECONDS = 8 * 60 * 60;
@@ -291,6 +297,11 @@ export function createGameState() {
     projectiles: [],
     floatingTexts: [],
     purchasedNodes: [],
+    labyrinth: {
+      purchasedNodeIds: [],
+      kingOrderCooldownSeconds: 0,
+      workerPulseProgressSeconds: 0
+    },
     modifiers: {
       tapPower: 4,
       orderRate: 0,
@@ -407,8 +418,22 @@ export function getWeaponCost(type, level = 1) {
   };
 }
 
-export function getAverageQualityMultiplier(qualityBonus = 0) {
-  const adjusted = getAdjustedQualityTable(qualityBonus);
+export function getWeaponBuildCost(state, type) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  const discount =
+    (purchased.includes("labyrinth10") ? 0.1 : 0) +
+    (purchased.includes("labyrinth11") ? 0.2 : 0);
+  const baseCost = getWeaponCost(type, 1);
+  const multiplier = Math.max(0, 1 - discount);
+  return {
+    orders: Math.ceil(baseCost.orders * multiplier),
+    shards: Math.ceil(baseCost.shards * multiplier)
+  };
+}
+
+export function getAverageQualityMultiplier(qualityBonus = 0, purchasedNodeIds = []) {
+  const adjusted = getAdjustedQualityTable(qualityBonus, purchasedNodeIds);
   const totalChance = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
   const weighted = adjusted.reduce((sum, quality) => sum + quality.multiplier * quality.chance, 0);
   return weighted / totalChance;
@@ -425,9 +450,12 @@ export function calculateWeaponShotDamage({
   qualityMultiplier,
   condition = 1,
   damageMultiplier = 1,
+  criticalDamageMultiplier = 1,
   hitWeakSpot = false
 }) {
-  const shotMultiplier = quality ? getQualityDamageMultiplier(type, quality) : qualityMultiplier;
+  const shotMultiplier = quality
+    ? getQualityDamageMultiplier(type, quality) * (quality.id === "critical" ? criticalDamageMultiplier : 1)
+    : qualityMultiplier;
   const weakMultiplier = hitWeakSpot ? 3 : 1;
   return Math.round(
     type.baseDamage *
@@ -471,8 +499,8 @@ export function estimateWeaponDps(type, options = {}) {
   return ((1 - weakHitChance) * normalDamage + weakHitChance * weakDamage) / reload;
 }
 
-export function getAverageShotMultiplier(type, qualityBonus = 0) {
-  const adjusted = getAdjustedQualityTable(qualityBonus);
+export function getAverageShotMultiplier(type, qualityBonus = 0, purchasedNodeIds = []) {
+  const adjusted = getAdjustedQualityTable(qualityBonus, purchasedNodeIds);
   const totalChance = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
   const weighted = adjusted.reduce((sum, quality) => sum + getQualityDamageMultiplier(type, quality) * quality.chance, 0);
   return weighted / totalChance;
@@ -492,11 +520,84 @@ export function spend(state, cost) {
 }
 
 export function tapForOrders(state, amount = 1) {
-  const gained = state.modifiers.tapPower * amount;
+  ensureLabyrinth(state);
+  const baseGain = computeManualTapBaseGain(state);
+  let gained = baseGain * amount;
+  if (
+    amount > 0 &&
+    state.labyrinth.purchasedNodeIds.includes("labyrinth06") &&
+    state.labyrinth.kingOrderCooldownSeconds === 0
+  ) {
+    // Ready node 6 multiplies at most one tap-unit by x25 (extra x24 over normal).
+    gained += baseGain * Math.min(1, amount) * 24;
+    state.labyrinth.kingOrderCooldownSeconds = KING_ORDER_COOLDOWN_SECONDS;
+  }
   state.resources.orders += gained;
   state.stats.taps += amount;
   addFloatingText(state, `+${formatNumber(gained)} приказов`, 0.5, 0.68, "#f2d075");
   return gained;
+}
+
+export function getEffectiveOrderRate(state) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  let rate = state.modifiers.orderRate;
+  if (purchased.includes("labyrinth07")) {
+    rate += 2;
+  }
+  if (purchased.includes("labyrinth09")) {
+    rate += 5;
+  }
+  if (purchased.includes("labyrinth08")) {
+    rate *= 2;
+  }
+  return rate;
+}
+
+export function getEffectiveAutoCollectRate(state) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  const labyrinthFraction = purchased.includes("labyrinth18")
+    ? 1
+    : purchased.includes("labyrinth16")
+      ? 0.5
+      : purchased.includes("labyrinth14")
+        ? 0.25
+    : purchased.includes("labyrinth13")
+      ? 0.1
+      : 0;
+  const legacyFraction = state.modifiers.autoCollect ? 1 : 0;
+  return AUTO_COLLECT_RATE * Math.max(legacyFraction, labyrinthFraction);
+}
+
+export function getEffectiveShardYield(state) {
+  ensureLabyrinth(state);
+  const purchased = state.labyrinth.purchasedNodeIds;
+  const bonus = (purchased.includes("labyrinth15") ? 0.25 : 0) +
+    (purchased.includes("labyrinth17") ? 0.75 : 0);
+  const multiplier = 1 + bonus;
+  return state.modifiers.shardYield * multiplier;
+}
+
+function computeManualTapBaseGain(state) {
+  const purchased = state.labyrinth.purchasedNodeIds;
+  let gain = state.modifiers.tapPower;
+  if (purchased.includes("labyrinth01")) {
+    gain += 1;
+  }
+  if (purchased.includes("labyrinth02")) {
+    gain += 2;
+  }
+  if (purchased.includes("labyrinth03")) {
+    gain += 5;
+  }
+  if (purchased.includes("labyrinth04")) {
+    gain += getEffectiveOrderRate(state) * 0.01;
+  }
+  if (purchased.includes("labyrinth05")) {
+    gain *= 1.25;
+  }
+  return gain;
 }
 
 export function buildWeapon(state, slotIndex = state.selectedSlot, typeId = state.selectedWeaponType) {
@@ -508,7 +609,7 @@ export function buildWeapon(state, slotIndex = state.selectedSlot, typeId = stat
   if (type.unlockLayer > state.cube.layerIndex) {
     return { ok: false, reason: "locked" };
   }
-  const cost = getWeaponCost(type, 1);
+  const cost = getWeaponBuildCost(state, type);
   if (!spend(state, cost)) {
     return { ok: false, reason: "cost" };
   }
@@ -518,7 +619,8 @@ export function buildWeapon(state, slotIndex = state.selectedSlot, typeId = stat
     level: 1,
     cooldown: type.reload * 0.38,
     condition: 1,
-    shots: 0
+    shots: 0,
+    automaticShotsSinceGuarantee: 0
   };
   slot.weapon = weapon;
   state.stats.builtWeapons += 1;
@@ -535,7 +637,7 @@ export function replaceWeapon(state, slotIndex = state.selectedSlot, typeId = st
   if (type.unlockLayer > state.cube.layerIndex) {
     return { ok: false, reason: "locked" };
   }
-  const cost = getWeaponCost(type, 1);
+  const cost = getWeaponBuildCost(state, type);
   if (!spend(state, cost)) {
     return { ok: false, reason: "cost" };
   }
@@ -546,7 +648,8 @@ export function replaceWeapon(state, slotIndex = state.selectedSlot, typeId = st
     level: 1,
     cooldown: type.reload * 0.5,
     condition: 1,
-    shots: 0
+    shots: 0,
+    automaticShotsSinceGuarantee: 0
   };
   slot.weapon = weapon;
   state.stats.replacedWeapons += 1;
@@ -595,9 +698,11 @@ export function repairWeapon(state, slotIndex) {
   if (missing <= 0.01) {
     return { ok: false, reason: "healthy" };
   }
+  ensureLabyrinth(state);
+  const repairMultiplier = state.labyrinth.purchasedNodeIds.includes("labyrinth19") ? 0.75 : 1;
   const cost = {
-    orders: Math.ceil(45 * slot.weapon.level),
-    shards: Math.ceil(8 * slot.weapon.level)
+    orders: Math.ceil(45 * slot.weapon.level * repairMultiplier),
+    shards: Math.ceil(8 * slot.weapon.level * repairMultiplier)
   };
   if (!spend(state, cost)) {
     return { ok: false, reason: "cost" };
@@ -637,6 +742,57 @@ export function canBuyUpgradeNode(state, nodeId) {
   return { ok: true };
 }
 
+export function canBuyLabyrinthNode(state, nodeId) {
+  ensureLabyrinth(state);
+  const node = getLabyrinthNode(nodeId);
+  if (!node) {
+    return { ok: false, reason: "node" };
+  }
+  if (state.labyrinth.purchasedNodeIds.includes(nodeId)) {
+    return { ok: false, reason: "node" };
+  }
+  if (node.number > LABYRINTH_IMPLEMENTED_MAX) {
+    return { ok: false, reason: "not-implemented" };
+  }
+  const visibility = getLabyrinthNodeVisibility(state.labyrinth.purchasedNodeIds, nodeId);
+  if (visibility !== "available") {
+    return { ok: false, reason: "prerequisite" };
+  }
+  if (!canAfford(state, node.cost)) {
+    return { ok: false, reason: "cost" };
+  }
+  return { ok: true, node };
+}
+
+export function buyLabyrinthNode(state, nodeId) {
+  const availability = canBuyLabyrinthNode(state, nodeId);
+  if (!availability.ok) {
+    return availability;
+  }
+  const { node } = availability;
+  spend(state, node.cost);
+  state.labyrinth.purchasedNodeIds.push(node.id);
+  if (node.id === "labyrinth27" || node.id === "labyrinth29") {
+    state.unlockedSlots = Math.min(state.slots.length, state.unlockedSlots + 1);
+  }
+  return { ok: true, node };
+}
+
+function applyWeaponWear(state, weapon, amount, baseMinimumCondition = 0.2) {
+  ensureLabyrinth(state);
+  const wearMultiplier = state.labyrinth.purchasedNodeIds.includes("labyrinth22")
+    ? 0.55
+    : state.labyrinth.purchasedNodeIds.includes("labyrinth20")
+      ? 0.85
+      : 1;
+  const minimumCondition = state.labyrinth.purchasedNodeIds.includes("labyrinth24")
+    ? Math.max(0.7, baseMinimumCondition)
+    : state.labyrinth.purchasedNodeIds.includes("labyrinth21")
+      ? Math.max(0.4, baseMinimumCondition)
+      : baseMinimumCondition;
+  weapon.condition = Math.max(minimumCondition, weapon.condition - amount * wearMultiplier);
+}
+
 export function manualAimAt(state, x, y, slotIndex = state.selectedSlot) {
   const slot = state.slots[slotIndex];
   if (!slot?.weapon) {
@@ -667,7 +823,7 @@ export function manualAimAt(state, x, y, slotIndex = state.selectedSlot) {
     weaponType: type
   });
   slot.weapon.cooldown = type.reload * 0.75;
-  slot.weapon.condition = Math.max(0.25, slot.weapon.condition - 0.015);
+  applyWeaponWear(state, slot.weapon, 0.015, 0.25);
   state.stats.shots += 1;
   slot.weapon.shots += 1;
   if (hitWeakSpot) {
@@ -685,7 +841,9 @@ export function tickGame(state, dt, random = Math.random) {
   }
 
   state.time += dt;
-  state.resources.orders += state.modifiers.orderRate * dt;
+  state.resources.orders += getEffectiveOrderRate(state) * dt;
+  advanceWorkerPulse(state, dt);
+  advanceLabyrinthCooldown(state, dt);
   state.cube.weakSpot.age += dt;
 
   const weakInterval = Math.max(7.5, 18 / state.modifiers.weakSpotRate);
@@ -698,9 +856,7 @@ export function tickGame(state, dt, random = Math.random) {
     if (!slot.weapon) {
       continue;
     }
-    if (state.modifiers.autoRepair && slot.weapon.condition < 1) {
-      slot.weapon.condition = Math.min(1, slot.weapon.condition + dt * 0.012);
-    }
+    applyAutoRepair(state, slot.weapon, dt);
     slot.weapon.cooldown -= dt;
     if (slot.weapon.cooldown <= 0) {
       resolveAutomaticWeaponShot(state, slot, slotIndex, random);
@@ -720,9 +876,10 @@ export function tickGame(state, dt, random = Math.random) {
     }
   }
 
-  if (state.modifiers.autoCollect) {
+  const autoCollectRate = getEffectiveAutoCollectRate(state);
+  if (autoCollectRate > 0) {
     const bank = ensureBlockBank(state);
-    const accrued = bank.autoCollectCredit + Math.max(0, dt) * AUTO_COLLECT_RATE;
+    const accrued = bank.autoCollectCredit + Math.max(0, dt) * autoCollectRate;
     const due = Math.max(0, Math.floor(accrued + 1e-9));
     bank.autoCollectCredit = Math.max(0, accrued - due);
     const resting = state.blocks.filter((block) => block.resting);
@@ -744,14 +901,16 @@ function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}
     return { ok: false, reason: "won" };
   }
   const type = getWeaponType(slot.weapon.typeId);
-  const quality = rollQuality(state, random);
+  const guarantee = state.labyrinth.purchasedNodeIds.includes("labyrinth30") &&
+    slot.weapon.automaticShotsSinceGuarantee >= 10;
+  const quality = guarantee ? rollGuaranteedQuality(state, random) : rollQuality(state, random);
   const canHitWeakSpot = canWeaponDamageLayer(type, state.cube.layerIndex, { hitWeakSpot: true });
   const hitWeakSpot = canHitWeakSpot && random() < 0.03 + state.modifiers.qualityBonus * 0.08;
   const target = pickTargetForWeapon(state, type, hitWeakSpot, random);
   if (!target) {
     state.stats.blockedShots += 1;
     slot.weapon.cooldown += type.reload;
-    slot.weapon.condition = Math.max(0.2, slot.weapon.condition - 0.004);
+    applyWeaponWear(state, slot.weapon, 0.004);
     if (!options.silent) {
       addFloatingText(state, "вне зоны", 0.5, 0.38, "#d2c0a0");
     }
@@ -772,8 +931,13 @@ function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}
   }
   state.stats.shots += 1;
   slot.weapon.shots += 1;
+  if (guarantee) {
+    slot.weapon.automaticShotsSinceGuarantee = 0;
+  } else if (state.labyrinth.purchasedNodeIds.includes("labyrinth30")) {
+    slot.weapon.automaticShotsSinceGuarantee += 1;
+  }
   slot.weapon.cooldown += type.reload * Math.max(0.62, 1 - slot.weapon.level * 0.08);
-  slot.weapon.condition = Math.max(0.2, slot.weapon.condition - (quality.id === "critical" ? 0.026 : 0.01));
+  applyWeaponWear(state, slot.weapon, quality.id === "critical" ? 0.026 : 0.01);
   return { ok: true, damage, hitWeakSpot };
 }
 
@@ -878,7 +1042,9 @@ function advanceOfflineTime(state, seconds, random) {
     return;
   }
   state.time += seconds;
-  state.resources.orders += state.modifiers.orderRate * seconds;
+  state.resources.orders += getEffectiveOrderRate(state) * seconds;
+  advanceWorkerPulse(state, seconds);
+  advanceLabyrinthCooldown(state, seconds);
 
   const weakInterval = Math.max(7.5, 18 / state.modifiers.weakSpotRate);
   const totalWeakAge = (state.cube.weakSpot?.age ?? 0) + seconds;
@@ -893,18 +1059,41 @@ function advanceOfflineTime(state, seconds, random) {
     if (!weapon) {
       continue;
     }
-    if (state.modifiers.autoRepair && weapon.condition < 1) {
-      weapon.condition = Math.min(1, weapon.condition + seconds * 0.012);
-    }
+    applyAutoRepair(state, weapon, seconds);
     weapon.cooldown -= seconds;
   }
 
-  if (state.modifiers.autoCollect) {
+  const autoCollectRate = getEffectiveAutoCollectRate(state);
+  if (autoCollectRate > 0) {
     const bank = ensureBlockBank(state);
-    const accrued = bank.autoCollectCredit + seconds * AUTO_COLLECT_RATE;
+    const accrued = bank.autoCollectCredit + seconds * autoCollectRate;
     const due = Math.max(0, Math.floor(accrued + 1e-9));
     bank.autoCollectCredit = Math.max(0, accrued - due);
     collectBankedBlocks(state, due, { silent: true });
+  }
+}
+
+function applyAutoRepair(state, weapon, seconds) {
+  if (seconds <= 0 || weapon.condition >= 1) {
+    return;
+  }
+  ensureLabyrinth(state);
+  const minimumCondition = state.labyrinth.purchasedNodeIds.includes("labyrinth24") ? 0.7 : 0;
+  if (state.modifiers.autoRepair) {
+    weapon.condition = Math.min(1, weapon.condition + seconds * 0.012);
+    return;
+  }
+  if (!state.labyrinth.purchasedNodeIds.includes("labyrinth23")) {
+    return;
+  }
+  const repairable = Math.min(weapon.condition + seconds * 0.006, 1) - weapon.condition;
+  const amount = Math.min(repairable, Math.max(0, state.resources.orders) / 100);
+  state.resources.orders -= amount * 100;
+  weapon.condition = Math.min(1, weapon.condition + amount);
+  if (weapon.condition < minimumCondition && state.resources.orders > 0) {
+    const floorRepair = Math.min(minimumCondition - weapon.condition, state.resources.orders / 100);
+    state.resources.orders -= floorRepair * 100;
+    weapon.condition += floorRepair;
   }
 }
 
@@ -933,7 +1122,7 @@ export function collectBlock(state, blockId) {
     return { ok: false };
   }
   const [block] = state.blocks.splice(index, 1);
-  const gained = Math.max(1, Math.round(block.value * state.modifiers.shardYield));
+  const gained = Math.max(1, Math.round(block.value * getEffectiveShardYield(state)));
   state.resources.shards += gained;
   state.stats.collectedBlocks += 1;
   state.stats.shardsCollected += gained;
@@ -979,7 +1168,7 @@ export function collectBankedBlocks(state, maxCount = Number.POSITIVE_INFINITY, 
     bucket[1] -= take;
     remaining -= take;
     collected += take;
-    gained += take * Math.max(1, Math.round(bucket[0] * state.modifiers.shardYield));
+    gained += take * Math.max(1, Math.round(bucket[0] * getEffectiveShardYield(state)));
   }
 
   bank.buckets = bank.buckets.filter(([, count]) => count > 0);
@@ -1049,11 +1238,108 @@ export function migrateSaveData(parsed) {
   compactExcessBlocks(state);
   state.savedAtMs = Number.isFinite(state.savedAtMs) ? Math.max(0, Math.floor(state.savedAtMs)) : null;
   state.offlineRngState = normalizeOfflineRngState(state.offlineRngState);
+  state.labyrinth = normalizeLabyrinth(state.labyrinth);
+  state.unlockedSlots = Number.isFinite(state.unlockedSlots)
+    ? Math.max(2, Math.min(state.slots.length, Math.floor(state.unlockedSlots)))
+    : 2;
+  for (const slot of state.slots) {
+    if (slot?.weapon) {
+      const counter = Number(slot.weapon.automaticShotsSinceGuarantee);
+      slot.weapon.automaticShotsSinceGuarantee = Number.isFinite(counter) && counter >= 0
+        ? Math.floor(counter)
+        : 0;
+    }
+  }
 
   state.cube.totalHp = CUBE_LAYERS.reduce((sum, layer) => sum + layer.hp, 0);
   state.cube.layerIndex = Math.max(0, Math.min(state.cube.layerIndex ?? 0, CUBE_LAYERS.length));
   state.version = SAVE_VERSION;
   return state;
+}
+
+function normalizeLabyrinth(source) {
+  const purchasedNodeIds = [];
+  const seen = new Set();
+  if (Array.isArray(source?.purchasedNodeIds)) {
+    for (const id of source.purchasedNodeIds) {
+      if (typeof id !== "string" || id.length === 0 || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      purchasedNodeIds.push(id);
+    }
+  }
+
+  let cooldown = Number(source?.kingOrderCooldownSeconds);
+  if (!Number.isFinite(cooldown)) {
+    cooldown = 0;
+  }
+  cooldown = Math.max(0, Math.min(KING_ORDER_COOLDOWN_SECONDS, cooldown));
+
+  let pulseProgress = Number(source?.workerPulseProgressSeconds);
+  if (!Number.isFinite(pulseProgress) || pulseProgress < 0) {
+    pulseProgress = 0;
+  } else {
+    pulseProgress %= WORKER_PULSE_INTERVAL_SECONDS;
+  }
+
+  return {
+    purchasedNodeIds,
+    kingOrderCooldownSeconds: cooldown,
+    workerPulseProgressSeconds: pulseProgress
+  };
+}
+
+function ensureLabyrinth(state) {
+  if (!state.labyrinth || !Array.isArray(state.labyrinth.purchasedNodeIds)) {
+    state.labyrinth = normalizeLabyrinth(state.labyrinth);
+    return state.labyrinth;
+  }
+  if (!Number.isFinite(state.labyrinth.kingOrderCooldownSeconds)) {
+    state.labyrinth.kingOrderCooldownSeconds = 0;
+  }
+  if (
+    !Number.isFinite(state.labyrinth.workerPulseProgressSeconds) ||
+    state.labyrinth.workerPulseProgressSeconds < 0
+  ) {
+    state.labyrinth.workerPulseProgressSeconds = 0;
+  } else {
+    state.labyrinth.workerPulseProgressSeconds %= WORKER_PULSE_INTERVAL_SECONDS;
+  }
+  return state.labyrinth;
+}
+
+function advanceWorkerPulse(state, seconds) {
+  ensureLabyrinth(state);
+  if (
+    !(seconds > 0) ||
+    !state.labyrinth.purchasedNodeIds.includes("labyrinth12")
+  ) {
+    return;
+  }
+  const total = state.labyrinth.workerPulseProgressSeconds + seconds;
+  const pulses = Math.floor((total + 1e-9) / WORKER_PULSE_INTERVAL_SECONDS);
+  state.labyrinth.workerPulseProgressSeconds = total - pulses * WORKER_PULSE_INTERVAL_SECONDS;
+  if (state.labyrinth.workerPulseProgressSeconds < 1e-9) {
+    state.labyrinth.workerPulseProgressSeconds = 0;
+  }
+  if (pulses > 0) {
+    state.resources.orders +=
+      pulses * getEffectiveOrderRate(state) * WORKER_PULSE_INCOME_SECONDS;
+  }
+}
+
+function advanceLabyrinthCooldown(state, seconds) {
+  ensureLabyrinth(state);
+  if (!(seconds > 0)) {
+    return;
+  }
+  const current = state.labyrinth.kingOrderCooldownSeconds;
+  if (!(current > 0)) {
+    state.labyrinth.kingOrderCooldownSeconds = 0;
+    return;
+  }
+  state.labyrinth.kingOrderCooldownSeconds = Math.max(0, current - seconds);
 }
 
 function applyDamage(state, damage, x, y, options) {
@@ -1167,7 +1453,7 @@ export function getSiegeGateStatus(state) {
     (slot, index) => index < state.unlockedSlots && slot.weapon?.typeId === requiredTypeId
   );
   const active = !state.won && state.cube.layerIndex === gateLayerIndex && !hasRequiredWeapon;
-  const cost = getWeaponCost(type, 1);
+  const cost = getWeaponBuildCost(state, type);
   return {
     active,
     weaponName: type.name,
@@ -1186,12 +1472,14 @@ function resolveWeaponDamage(state, weapon, quality, hitWeakSpot) {
     quality,
     condition: weapon.condition,
     damageMultiplier: state.modifiers.damageMultiplier,
+    criticalDamageMultiplier: state.labyrinth.purchasedNodeIds.includes("labyrinth28") ? 1.25 : 1,
     hitWeakSpot
   });
 }
 
-function rollQuality(state, random) {
-  const adjusted = getAdjustedQualityTable(state.modifiers.qualityBonus);
+function rollGuaranteedQuality(state, random) {
+  const adjusted = getAdjustedQualityTable(state.modifiers.qualityBonus, state.labyrinth.purchasedNodeIds)
+    .filter((quality) => quality.id === "great" || quality.id === "critical");
   const total = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
   let roll = random() * total;
   for (const quality of adjusted) {
@@ -1203,16 +1491,38 @@ function rollQuality(state, random) {
   return adjusted[adjusted.length - 1];
 }
 
-function getAdjustedQualityTable(bonus) {
-  return QUALITY_TABLE.map((quality) => {
+function rollQuality(state, random) {
+  const adjusted = getAdjustedQualityTable(state.modifiers.qualityBonus, state.labyrinth.purchasedNodeIds);
+  const total = adjusted.reduce((sum, quality) => sum + quality.chance, 0);
+  let roll = random() * total;
+  for (const quality of adjusted) {
+    roll -= quality.chance;
+    if (roll <= 0) {
+      return quality;
+    }
+  }
+  return adjusted[adjusted.length - 1];
+}
+
+function getAdjustedQualityTable(bonus, purchasedNodeIds = []) {
+  const adjusted = QUALITY_TABLE.map((quality) => {
     if (quality.id === "poor") {
       return { ...quality, chance: Math.max(0.03, quality.chance - bonus * 0.55) };
     }
     if (quality.id === "great" || quality.id === "critical") {
       return { ...quality, chance: quality.chance + bonus * (quality.id === "critical" ? 0.34 : 0.5) };
     }
-    return quality;
+    return { ...quality };
   });
+  if (purchasedNodeIds.includes("labyrinth25")) {
+    adjusted.find((quality) => quality.id === "poor").chance -= 0.05;
+    adjusted.find((quality) => quality.id === "good").chance += 0.05;
+  }
+  if (purchasedNodeIds.includes("labyrinth26")) {
+    adjusted.find((quality) => quality.id === "normal").chance -= 0.02;
+    adjusted.find((quality) => quality.id === "critical").chance += 0.02;
+  }
+  return adjusted;
 }
 
 function pickTargetForWeapon(state, type, hitWeakSpot, random) {

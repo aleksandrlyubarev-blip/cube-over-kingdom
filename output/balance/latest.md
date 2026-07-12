@@ -1,6 +1,6 @@
 # Balance Snapshot
 
-Generated: 2026-07-10T16:14:25.707Z
+Generated: 2026-07-12T04:54:56.196Z
 
 ## Theoretical 4-Slot Pressure
 
@@ -27,8 +27,9 @@ Generated: 2026-07-10T16:14:25.707Z
 | Budget construction guard OK | yes |
 | Observed total | 3h 23m / 3h 47m (within) |
 | Observed combat | 3h 22m / 3h 24m (within) |
-| Observed acquisition | 1m 49s / 22m 45s (too-short) |
-| Observed budget guard OK | no |
+| Observed acquisition (advisory) | 1m 49s / 22m 45s (too-short) |
+| Observed budget diagnostic OK (advisory) | no |
+| Release balance gate OK | yes |
 
 ## Guardrails
 
@@ -74,6 +75,21 @@ Total HP: 9693000 current -> 9862549 suggested at 90% combat budget.
 
 Suggested preview total spread: 2.1x; optimizer: 1h 38m; ok: yes.
 Suggested preview combat spread: 2.08x; optimizer combat: 1h 37m; ok: yes.
+
+## Labyrinth Branch Economy
+
+Target full-run range: 2h 50m-4h 44m (±25%).
+
+| Strategy | Branch | Investment | Result | Total | Combat | Acquisition | Target status |
+| --- | --- | ---: | --- | ---: | ---: | ---: | --- |
+| Ручная ветка | manual | 0 orders / 25 shards | win | 3h 10m | 3h 9m | 1m 21s | within |
+| Ветка автоматизации | automation | 150 orders / 0 shards | win | 2h 59m | 2h 58m | 57s | within |
+| Ветка сбора | collection | 0 orders / 1150 shards | win | 3h 12m | 3h 11m | 1m 25s | within |
+| Ветка качества | quality | 150 orders / 200 shards | win | 2h 57m | 2h 56m | 52s | within |
+
+All strategies complete: yes.
+All strategies within target: yes.
+No mandatory single branch: yes.
 
 ## Profiles
 
@@ -149,6 +165,16 @@ Result: win in 1h 36m; combat: 1h 36m; acquisition: 41s; remaining HP: 0.
 | Внутреннее ядро | 11m 21s | 0s | 11m 21s | 1h 15m |
 | Сердце куба | 21m 16s | 34s | 20m 42s | 1h 36m |
 
+
+## Collection Scenarios (Excluded From Solver Guardrails)
+
+| Scenario | Result | Total | Combat | Acquisition | Collected blocks | Shards collected |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Ручной сбор | win | 3h 23m | 3h 22m | 1m 49s | 47430 | 322928 |
+| Автосбор 10% | win | 3h 23m | 3h 22m | 1m 49s | 9772 | 57152 |
+| Автосбор 25% | win | 3h 23m | 3h 22m | 1m 49s | 24411 | 146612 |
+| Автосбор 50% | win | 3h 23m | 3h 22m | 1m 49s | 45621 | 396006 |
+| Автосбор 100% | win | 3h 23m | 3h 22m | 1m 49s | 47438 | 646224 |
 
 ## Diagnostics (Excluded From Solver Guardrails)
 

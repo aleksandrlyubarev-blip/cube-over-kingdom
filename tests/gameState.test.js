@@ -8,20 +8,27 @@ import {
   LEGACY_V1_LAYER_HP,
   MAX_VISUAL_BLOCKS,
   OFFLINE_PROGRESS_CAP_SECONDS,
+  QUALITY_TABLE,
   SAVE_VERSION,
   addBlocksToBank,
   collectBankedBlocks,
   deserializeGameState,
+  getEffectiveOrderRate,
+  getEffectiveAutoCollectRate,
+  getEffectiveShardYield,
   getBankedBlockCount,
   getCurrentLayerProgress,
   getSiegeGateStatus,
   getLayerVulnerabilitySummary,
   getReplacementPreview,
   getWeaponLayerReachStatus,
+  getWeaponBuildCost,
   serializeGameState,
   simulateOfflineProgress,
   buildWeapon,
+  buyLabyrinthNode,
   buyUpgradeNode,
+  canBuyLabyrinthNode,
   canBuyUpgradeNode,
   canWeaponDamageLayer,
   calculateWeaponShotDamage,
@@ -29,10 +36,12 @@ import {
   collectBlock,
   createGameState,
   getAverageQualityMultiplier,
+  getAverageShotMultiplier,
   getRemainingCubeHp,
   getWeaponType,
   manualAimAt,
   replaceWeapon,
+  repairWeapon,
   tapForOrders,
   tickGame,
   upgradeWeapon
@@ -48,6 +57,766 @@ test("tap grants royal orders and records taps", () => {
   assert.equal(gained, 12);
   assert.equal(state.resources.orders, before + 12);
   assert.equal(state.stats.taps, 3);
+});
+
+test("tapForOrders scales linearly for fractional amount without labyrinth nodes", () => {
+  const state = createGameState();
+  assert.equal(state.modifiers.tapPower, 4);
+  const before = state.resources.orders;
+
+  const gained = tapForOrders(state, 0.5);
+
+  assert.equal(gained, 2);
+  assert.equal(state.resources.orders, before + 2);
+  assert.equal(state.stats.taps, 0.5);
+});
+
+test("createGameState seeds labyrinth defaults and SAVE_VERSION is 5", () => {
+  const state = createGameState();
+
+  assert.equal(SAVE_VERSION, 5);
+  assert.equal(state.version, 5);
+  assert.deepEqual(state.labyrinth, {
+    purchasedNodeIds: [],
+    kingOrderCooldownSeconds: 0,
+    workerPulseProgressSeconds: 0
+  });
+});
+
+test("labyrinth purchase: free root, prerequisite/cost flow, duplicate rejection", () => {
+  const state = createGameState();
+  state.resources.orders = 100;
+  state.resources.shards = 24;
+
+  const free = buyLabyrinthNode(state, "labyrinth01");
+  assert.equal(free.ok, true);
+  assert.equal(free.node.id, "labyrinth01");
+  assert.deepEqual(state.labyrinth.purchasedNodeIds, ["labyrinth01"]);
+  assert.equal(state.resources.orders, 100);
+  assert.equal(state.resources.shards, 24);
+
+  const blockedByCost = canBuyLabyrinthNode(state, "labyrinth02");
+  assert.equal(blockedByCost.ok, false);
+  assert.equal(blockedByCost.reason, "cost");
+
+  const prereq = canBuyLabyrinthNode(state, "labyrinth03");
+  assert.equal(prereq.ok, false);
+  assert.equal(prereq.reason, "prerequisite");
+
+  state.resources.shards = 25;
+  const affordable = canBuyLabyrinthNode(state, "labyrinth02");
+  assert.equal(affordable.ok, true);
+  assert.equal(affordable.node.id, "labyrinth02");
+
+  const bought = buyLabyrinthNode(state, "labyrinth02");
+  assert.equal(bought.ok, true);
+  assert.equal(state.resources.shards, 0);
+  assert.deepEqual(state.labyrinth.purchasedNodeIds, ["labyrinth01", "labyrinth02"]);
+
+  const duplicate = buyLabyrinthNode(state, "labyrinth01");
+  assert.equal(duplicate.ok, false);
+  assert.equal(duplicate.reason, "node");
+  assert.deepEqual(state.labyrinth.purchasedNodeIds, ["labyrinth01", "labyrinth02"]);
+  assert.equal(state.resources.orders, 100);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("labyrinth collection nodes 13-15 purchase at exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth01"];
+  state.resources.shards = 1_150;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth14").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth15").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth13").ok, true);
+  assert.equal(state.resources.shards, 1_050);
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth15").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth14").ok, true);
+  assert.equal(state.resources.shards, 750);
+  assert.equal(buyLabyrinthNode(state, "labyrinth15").ok, true);
+  assert.equal(state.resources.shards, 0);
+  assert.deepEqual(state.labyrinth.purchasedNodeIds, ["labyrinth01", "labyrinth13", "labyrinth14", "labyrinth15"]);
+});
+
+test("labyrinth collection nodes derive replacement speed and shard yield", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth13"];
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE * 0.1);
+  state.labyrinth.purchasedNodeIds = ["labyrinth13", "labyrinth14"];
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE * 0.25);
+  assert.equal(getEffectiveShardYield(state), 1);
+  state.labyrinth.purchasedNodeIds.push("labyrinth15");
+  assert.equal(getEffectiveShardYield(state), 1.25);
+});
+
+test("labyrinth collection nodes never downgrade legacy full auto collect", () => {
+  const state = createGameState();
+  state.modifiers.autoCollect = true;
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE);
+  state.labyrinth.purchasedNodeIds = ["labyrinth13"];
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE);
+  state.labyrinth.purchasedNodeIds.push("labyrinth14");
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE);
+});
+
+test("labyrinth collection nodes 16-18 purchase at exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth01", "labyrinth13", "labyrinth14", "labyrinth15"];
+  state.resources.shards = 10_500;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth16").ok, true);
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth17").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth18").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth16").ok, true);
+  assert.equal(state.resources.shards, 9_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth17").ok, true);
+  assert.equal(state.resources.shards, 6_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth18").ok, true);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("labyrinth collection nodes 16-18 reach full autocollect and +100% shards", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth13",
+    "labyrinth14",
+    "labyrinth15"
+  ];
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE * 0.25);
+  assert.equal(getEffectiveShardYield(state), 1.25);
+
+  state.labyrinth.purchasedNodeIds.push("labyrinth16");
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE * 0.5);
+  state.labyrinth.purchasedNodeIds.push("labyrinth17");
+  assert.equal(getEffectiveShardYield(state), 2);
+  state.labyrinth.purchasedNodeIds.push("labyrinth18");
+  assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE);
+});
+
+test("labyrinth maintenance nodes 19-21 purchase at exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth13"];
+  state.resources.shards = 1_550;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth20").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth21").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth19").ok, true);
+  assert.equal(state.resources.shards, 1_400);
+  assert.equal(buyLabyrinthNode(state, "labyrinth20").ok, true);
+  assert.equal(state.resources.shards, 1_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth21").ok, true);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("maintenance nodes reduce repair cost and weapon wear while preserving legacy autoRepair", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000;
+  state.resources.shards = 1_000;
+  assert.equal(buildWeapon(state, 0, "stoneThrower").ok, true);
+  state.slots[0].weapon.condition = 0.8;
+
+  assert.equal(repairWeapon(state, 0).ok, true);
+  assert.equal(state.resources.orders, 920);
+  assert.equal(state.resources.shards, 992);
+
+  state.labyrinth.purchasedNodeIds = ["labyrinth19"];
+  state.slots[0].weapon.condition = 0.5;
+  assert.equal(repairWeapon(state, 0).ok, true);
+  assert.equal(state.resources.orders, 886);
+  assert.equal(state.resources.shards, 986);
+
+  state.modifiers.autoRepair = true;
+  state.labyrinth.purchasedNodeIds = ["labyrinth19", "labyrinth20"];
+  state.slots[0].weapon.condition = 0.5;
+  const restored = deserializeGameState(serializeGameState(state));
+  tickGame(restored, 1, () => 0.5);
+  assert.ok(restored.slots[0].weapon.condition > 0.5);
+});
+
+test("maintenance nodes apply 15% wear reduction and 40% condition floor", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000;
+  state.resources.shards = 20;
+  assert.equal(buildWeapon(state, 0, "ballista").ok, true);
+  state.slots[0].weapon.cooldown = 0;
+  state.labyrinth.purchasedNodeIds = ["labyrinth20", "labyrinth21"];
+  state.slots[0].weapon.condition = 0.5;
+
+  tickGame(state, 1, () => 0.5);
+  assert.equal(state.slots[0].weapon.condition, 0.4915);
+  state.slots[0].weapon.condition = 0.41;
+  state.slots[0].weapon.cooldown = 0;
+  manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+  assert.equal(state.slots[0].weapon.condition, 0.4);
+});
+
+test("maintenance wear helper preserves the legacy manual condition floor", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000;
+  state.resources.shards = 20;
+  assert.equal(buildWeapon(state, 0, "ballista").ok, true);
+  state.slots[0].weapon.condition = 0.251;
+  state.slots[0].weapon.cooldown = 0;
+
+  manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+
+  assert.equal(state.slots[0].weapon.condition, 0.25);
+});
+
+test("labyrinth maintenance nodes 22-24 purchase at exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth13", "labyrinth19", "labyrinth20", "labyrinth21"];
+  state.resources.shards = 16_200;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth22").ok, true);
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth23").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth24").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth22").ok, true);
+  assert.equal(state.resources.shards, 14_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth23").ok, true);
+  assert.equal(state.resources.shards, 9_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth24").ok, true);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("labyrinth quality nodes 25-27 use exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth07"];
+  state.resources.shards = 1_600;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth26").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth27").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth25").ok, true);
+  assert.equal(state.resources.shards, 1_400);
+  assert.equal(buyLabyrinthNode(state, "labyrinth26").ok, true);
+  assert.equal(state.resources.shards, 800);
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").ok, true);
+  assert.equal(state.resources.shards, 0);
+  assert.equal(state.unlockedSlots, 3);
+  assert.equal(state.unlockedSlots <= state.slots.length, true);
+});
+
+test("labyrinth quality nodes transfer exact probabilities over legacy quality bonus", () => {
+  const state = createGameState();
+  state.modifiers.qualityBonus = 0.14;
+  state.labyrinth.purchasedNodeIds = ["labyrinth25", "labyrinth26"];
+
+  const type = getWeaponType("ballista");
+  const chances = [0.013, 0.5, 0.28, 0.16, 0.0876];
+  const multipliers = QUALITY_TABLE.map((quality) =>
+    quality.id === "critical" ? type.critMultiplier : quality.multiplier
+  );
+  const expected = chances.reduce((sum, chance, index) => sum + chance * multipliers[index], 0) / 1.0406;
+  assert.equal(getAverageShotMultiplier(type, state.modifiers.qualityBonus, state.labyrinth.purchasedNodeIds), expected);
+});
+
+test("labyrinth node 27 unlocks one slot once and save round-trip does not duplicate it", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth25", "labyrinth26"];
+  state.resources.shards = 800;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").ok, true);
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").reason, "node");
+  const restored = deserializeGameState(serializeGameState(state));
+  assert.equal(restored.unlockedSlots, 3);
+  assert.equal(restored.slots.length, state.slots.length);
+});
+
+test("labyrinth node 27 adds a slot on top of legacy slot upgrades", () => {
+  const state = createGameState();
+  state.unlockedSlots = 4;
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth25", "labyrinth26"];
+  state.resources.shards = 800;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth27").ok, true);
+
+  assert.equal(state.unlockedSlots, 5);
+});
+
+test("labyrinth quality nodes 28-30 use exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth25", "labyrinth26", "labyrinth27"];
+  state.unlockedSlots = 3;
+  state.resources.shards = 13_300;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth29").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth30").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth28").ok, true);
+  assert.equal(state.resources.shards, 11_500);
+  assert.equal(buyLabyrinthNode(state, "labyrinth29").ok, true);
+  assert.equal(state.resources.shards, 8_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth30").ok, true);
+  assert.equal(state.resources.shards, 0);
+  assert.equal(state.unlockedSlots, 4);
+  assert.equal(state.unlockedSlots <= state.slots.length, true);
+});
+
+test("labyrinth node 28 increases only critical damage and node 30 guarantees a quality", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth28", "labyrinth30"];
+  const type = getWeaponType("ballista");
+
+  assert.equal(calculateWeaponShotDamage({ type, quality: QUALITY_TABLE[2] }), 230);
+  assert.equal(calculateWeaponShotDamage({ type, quality: QUALITY_TABLE[4], criticalDamageMultiplier: 1.25 }), 425);
+  assert.equal(calculateWeaponShotDamage({ type, quality: QUALITY_TABLE[2], criticalDamageMultiplier: 1.25 }), 230);
+
+  state.resources.orders = 1_000;
+  assert.equal(buildWeapon(state, 0, "stoneThrower").ok, true);
+  state.slots[0].weapon.cooldown = 0;
+  for (let shot = 0; shot < 10; shot += 1) {
+    tickGame(state, 0, () => 0.99);
+    state.slots[0].weapon.cooldown = 0;
+  }
+  assert.equal(state.slots[0].weapon.automaticShotsSinceGuarantee, 10);
+  state.slots[0].weapon.cooldown = 0;
+  tickGame(state, 0, () => 0.99);
+  assert.ok(["great", "critical"].includes(state.projectiles.at(-1).quality));
+  assert.equal(state.slots[0].weapon.automaticShotsSinceGuarantee, 0);
+
+  state.slots[0].weapon.automaticShotsSinceGuarantee = 7;
+  const restored = deserializeGameState(serializeGameState(state));
+  assert.equal(restored.slots[0].weapon.automaticShotsSinceGuarantee, 7);
+});
+
+test("labyrinth node 29 adds another slot on top of legacy and node 27 slots", () => {
+  const state = createGameState();
+  state.unlockedSlots = 5;
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth07",
+    "labyrinth25",
+    "labyrinth26",
+    "labyrinth27",
+    "labyrinth28"
+  ];
+  state.resources.shards = 3_500;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth29").ok, true);
+
+  assert.equal(state.unlockedSlots, 6);
+});
+
+test("maintenance nodes 22-24 apply 45% wear reduction, paid repair, and 70% floor", () => {
+  const state = createGameState();
+  state.resources.orders = 200;
+  state.resources.shards = 20;
+  buildWeapon(state, 0, "ballista");
+  state.labyrinth.purchasedNodeIds = ["labyrinth20", "labyrinth21", "labyrinth22", "labyrinth23", "labyrinth24"];
+  state.slots[0].weapon.condition = 0.8;
+  state.slots[0].weapon.cooldown = 100;
+
+  tickGame(state, 1, () => 0.5);
+  assert.equal(state.slots[0].weapon.condition, 0.806);
+  assert.equal(state.resources.orders, 54.4);
+
+  state.slots[0].weapon.condition = 0.69;
+  state.slots[0].weapon.cooldown = 0;
+  manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+  assert.equal(state.slots[0].weapon.condition, 0.7);
+});
+
+test("legacy autoRepair stays free and online/offline paid repair matches without combat", () => {
+  const online = createGameState();
+  online.resources.orders = 100;
+  buildWeapon(online, 0, "stoneThrower");
+  online.labyrinth.purchasedNodeIds = ["labyrinth23"];
+  online.slots[0].weapon.condition = 0.5;
+  online.slots[0].weapon.cooldown = 100;
+  const offline = deserializeGameState(serializeGameState(online));
+
+  tickGame(online, 10, () => 0.5);
+  simulateOfflineProgress(offline, 10);
+  assert.equal(online.slots[0].weapon.condition, 0.56);
+  assert.equal(offline.slots[0].weapon.condition, online.slots[0].weapon.condition);
+  assert.equal(offline.resources.orders, online.resources.orders);
+
+  const legacy = createGameState();
+  legacy.resources.orders = 100;
+  buildWeapon(legacy, 0, "stoneThrower");
+  legacy.modifiers.autoRepair = true;
+  legacy.labyrinth.purchasedNodeIds = ["labyrinth23"];
+  legacy.slots[0].weapon.condition = 0.5;
+  legacy.slots[0].weapon.cooldown = 100;
+  tickGame(legacy, 1, () => 0.5);
+  assert.equal(legacy.slots[0].weapon.condition, 0.512);
+  assert.equal(legacy.resources.orders, 65);
+});
+
+test("labyrinth collection nodes 16-18 give equal results for large and small ticks", () => {
+  const large = createGameState();
+  large.labyrinth.purchasedNodeIds = ["labyrinth16", "labyrinth17", "labyrinth18"];
+  addBlocksToBank(large, 3, 4);
+  const small = deserializeGameState(serializeGameState(large));
+
+  tickGame(large, 1, () => 0.5);
+  for (let index = 0; index < 10; index += 1) {
+    tickGame(small, 0.1, () => 0.5);
+  }
+
+  assert.equal(large.resources.shards, small.resources.shards);
+  assert.equal(large.stats.collectedBlocks, small.stats.collectedBlocks);
+  assert.equal(getBankedBlockCount(large), getBankedBlockCount(small));
+});
+
+test("labyrinth collection derived modifiers match online and offline", () => {
+  const online = createGameState();
+  online.labyrinth.purchasedNodeIds = ["labyrinth13", "labyrinth15"];
+  addBlocksToBank(online, 4, 20);
+  const offline = deserializeGameState(serializeGameState(online));
+  tickGame(online, 10, () => 0.5);
+  simulateOfflineProgress(offline, 10);
+  assert.equal(online.resources.shards, 40);
+  assert.equal(online.resources.shards, offline.resources.shards);
+  assert.equal(online.stats.collectedBlocks, offline.stats.collectedBlocks);
+});
+
+test("labyrinth automation nodes 7-9 compose effective passive order rate", () => {
+  const state = createGameState();
+  state.modifiers.orderRate = 3;
+
+  assert.equal(getEffectiveOrderRate(state), 3);
+  state.labyrinth.purchasedNodeIds = ["labyrinth07"];
+  assert.equal(getEffectiveOrderRate(state), 5);
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth08"];
+  assert.equal(getEffectiveOrderRate(state), 10);
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth08", "labyrinth09"];
+  assert.equal(getEffectiveOrderRate(state), 20);
+  assert.equal(state.modifiers.orderRate, 3);
+});
+
+test("labyrinth automation nodes 7-9 purchase in order at exact costs", () => {
+  const state = createGameState();
+  state.resources.orders = 10_000;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth01").ok, true);
+  assert.equal(buyLabyrinthNode(state, "labyrinth07").ok, true);
+  assert.equal(state.resources.orders, 9_850);
+  assert.equal(buyLabyrinthNode(state, "labyrinth08").ok, true);
+  assert.equal(state.resources.orders, 9_450);
+  assert.equal(buyLabyrinthNode(state, "labyrinth09").ok, true);
+  assert.equal(state.resources.orders, 8_250);
+  assert.deepEqual(state.labyrinth.purchasedNodeIds, [
+    "labyrinth01",
+    "labyrinth07",
+    "labyrinth08",
+    "labyrinth09"
+  ]);
+});
+
+test("labyrinth automation nodes 10-12 purchase at exact mixed-currency costs", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth01",
+    "labyrinth07",
+    "labyrinth08",
+    "labyrinth09"
+  ];
+  state.resources.orders = 10_000;
+  state.resources.shards = 5_000;
+
+  assert.equal(buyLabyrinthNode(state, "labyrinth10").ok, true);
+  assert.equal(state.resources.orders, 7_500);
+  assert.equal(state.resources.shards, 5_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth11").ok, true);
+  assert.equal(state.resources.shards, 3_500);
+  assert.equal(buyLabyrinthNode(state, "labyrinth12").ok, true);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("labyrinth build discounts stack while weapon upgrades keep base cost", () => {
+  const state = createGameState();
+  const stoneThrower = getWeaponType("stoneThrower");
+  const ballista = getWeaponType("ballista");
+
+  assert.deepEqual(getWeaponBuildCost(state, stoneThrower), { orders: 35, shards: 0 });
+  state.labyrinth.purchasedNodeIds = ["labyrinth10"];
+  assert.deepEqual(getWeaponBuildCost(state, stoneThrower), { orders: 32, shards: 0 });
+  state.labyrinth.purchasedNodeIds = ["labyrinth10", "labyrinth11"];
+  assert.deepEqual(getWeaponBuildCost(state, stoneThrower), { orders: 25, shards: 0 });
+  assert.deepEqual(getWeaponBuildCost(state, ballista), { orders: 102, shards: 13 });
+
+  state.resources.orders = 100;
+  assert.equal(buildWeapon(state, 0, "stoneThrower").ok, true);
+  assert.equal(state.resources.orders, 75);
+  state.resources.orders = 1_000;
+  assert.equal(upgradeWeapon(state, 0).ok, true);
+  assert.equal(state.resources.orders, 939);
+
+  state.resources.shards = 13;
+  assert.equal(replaceWeapon(state, 0, "ballista").ok, true);
+  assert.equal(state.resources.orders, 837);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("labyrinth worker pulse is deterministic online and offline", () => {
+  const base = createGameState();
+  base.modifiers.orderRate = 3;
+  base.labyrinth.purchasedNodeIds = [
+    "labyrinth07",
+    "labyrinth08",
+    "labyrinth09",
+    "labyrinth10",
+    "labyrinth11",
+    "labyrinth12"
+  ];
+
+  const oneStep = deserializeGameState(serializeGameState(base));
+  const manySteps = deserializeGameState(serializeGameState(base));
+  const offline = deserializeGameState(serializeGameState(base));
+
+  tickGame(oneStep, 60, () => 0.5);
+  for (let index = 0; index < 6; index += 1) {
+    tickGame(manySteps, 10, () => 0.5);
+  }
+  const recap = simulateOfflineProgress(offline, 60);
+
+  assert.equal(oneStep.resources.orders - base.resources.orders, 1_600);
+  assert.equal(manySteps.resources.orders, oneStep.resources.orders);
+  assert.equal(offline.resources.orders, oneStep.resources.orders);
+  assert.equal(recap.ordersGained, 1_600);
+  assert.equal(oneStep.labyrinth.workerPulseProgressSeconds, 0);
+  assert.equal(manySteps.labyrinth.workerPulseProgressSeconds, 0);
+  assert.equal(offline.labyrinth.workerPulseProgressSeconds, 0);
+
+  const partial = deserializeGameState(serializeGameState(base));
+  partial.labyrinth.workerPulseProgressSeconds = 25;
+  tickGame(partial, 10, () => 0.5);
+  assert.equal(partial.resources.orders - base.resources.orders, 400);
+  assert.equal(partial.labyrinth.workerPulseProgressSeconds, 5);
+});
+
+test("labyrinth automation passive income is tick-size independent", () => {
+  const oneStep = createGameState();
+  oneStep.modifiers.orderRate = 3;
+  oneStep.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth08", "labyrinth09"];
+  const manySteps = deserializeGameState(serializeGameState(oneStep));
+  const before = oneStep.resources.orders;
+
+  tickGame(oneStep, 10, () => 0.5);
+  for (let index = 0; index < 10; index += 1) {
+    tickGame(manySteps, 1, () => 0.5);
+  }
+
+  assert.equal(oneStep.resources.orders - before, 200);
+  assert.equal(manySteps.resources.orders, oneStep.resources.orders);
+});
+
+test("labyrinth automation passive income advances offline without weapons", () => {
+  const state = createGameState();
+  state.modifiers.orderRate = 3;
+  state.labyrinth.purchasedNodeIds = ["labyrinth07", "labyrinth08", "labyrinth09"];
+  const before = state.resources.orders;
+
+  const recap = simulateOfflineProgress(state, 60);
+
+  assert.equal(recap.ordersGained, 1_200);
+  assert.equal(state.resources.orders, before + 1_200);
+});
+
+test("manual node 4 uses effective automation rate and reload does not duplicate it", () => {
+  const state = createGameState();
+  state.modifiers.orderRate = 3;
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth01",
+    "labyrinth02",
+    "labyrinth03",
+    "labyrinth04",
+    "labyrinth05",
+    "labyrinth07",
+    "labyrinth08",
+    "labyrinth09"
+  ];
+
+  assert.equal(tapForOrders(state, 1), 15.25);
+  const restored = deserializeGameState(serializeGameState(state));
+  assert.equal(restored.modifiers.orderRate, 3);
+  assert.equal(getEffectiveOrderRate(restored), 20);
+  assert.equal(tapForOrders(restored, 1), 15.25);
+});
+
+test("labyrinth nodes 1-3 add flat orders per tap on top of base tap power", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth01", "labyrinth02", "labyrinth03"];
+  const before = state.resources.orders;
+
+  const gained = tapForOrders(state, 1);
+
+  assert.equal(gained, 12);
+  assert.equal(state.resources.orders, before + 12);
+});
+
+test("labyrinth nodes 4-5 apply passive percent then manual multiplier", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth01",
+    "labyrinth02",
+    "labyrinth03",
+    "labyrinth04",
+    "labyrinth05"
+  ];
+  state.modifiers.orderRate = 100;
+  const before = state.resources.orders;
+
+  const gained = tapForOrders(state, 1);
+
+  assert.equal(gained, 16.25);
+  assert.equal(state.resources.orders, before + 16.25);
+});
+
+test("labyrinth node 6 multiplies one ready tap then enters 60s cooldown", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = [
+    "labyrinth01",
+    "labyrinth02",
+    "labyrinth03",
+    "labyrinth04",
+    "labyrinth05",
+    "labyrinth06"
+  ];
+  state.modifiers.orderRate = 0;
+  state.labyrinth.kingOrderCooldownSeconds = 0;
+  const before = state.resources.orders;
+
+  // (base 4 +1 +2 +5) * 1.25 = 15 per normal tap; ready node 6 multiplies after that.
+  const boosted = tapForOrders(state, 1);
+  assert.equal(boosted, 15 * 25);
+  assert.equal(state.labyrinth.kingOrderCooldownSeconds, 60);
+  assert.equal(state.resources.orders, before + 375);
+  assert.equal(state.stats.taps, 1);
+
+  const normal = tapForOrders(state, 1);
+  assert.equal(normal, 15);
+  assert.equal(state.labyrinth.kingOrderCooldownSeconds, 60);
+  assert.equal(state.stats.taps, 2);
+
+  state.labyrinth.kingOrderCooldownSeconds = 0;
+  const batchBefore = state.resources.orders;
+  const batched = tapForOrders(state, 3);
+  assert.equal(batched, 15 * 25 + 15 + 15);
+  assert.equal(state.resources.orders, batchBefore + batched);
+  assert.equal(state.labyrinth.kingOrderCooldownSeconds, 60);
+  assert.equal(state.stats.taps, 5);
+});
+
+test("labyrinth node 6 cooldown recharges online and offline equivalently", () => {
+  const online = createGameState();
+  online.labyrinth.purchasedNodeIds = ["labyrinth06"];
+  online.labyrinth.kingOrderCooldownSeconds = 60;
+  tickGame(online, 60, () => 0.5);
+  assert.equal(online.labyrinth.kingOrderCooldownSeconds, 0);
+
+  const offline = createGameState();
+  offline.labyrinth.purchasedNodeIds = ["labyrinth06"];
+  offline.labyrinth.kingOrderCooldownSeconds = 60;
+  simulateOfflineProgress(offline, 60);
+  assert.equal(offline.labyrinth.kingOrderCooldownSeconds, 0);
+
+  const largeStep = createGameState();
+  largeStep.labyrinth.kingOrderCooldownSeconds = 60;
+  tickGame(largeStep, 60, () => 0.5);
+
+  const smallSteps = createGameState();
+  smallSteps.labyrinth.kingOrderCooldownSeconds = 60;
+  for (let index = 0; index < 6; index += 1) {
+    tickGame(smallSteps, 10, () => 0.5);
+  }
+  assert.equal(largeStep.labyrinth.kingOrderCooldownSeconds, smallSteps.labyrinth.kingOrderCooldownSeconds);
+  assert.equal(largeStep.labyrinth.kingOrderCooldownSeconds, 0);
+
+  const zeroTick = createGameState();
+  zeroTick.labyrinth.kingOrderCooldownSeconds = 30;
+  tickGame(zeroTick, 0, () => 0.5);
+  assert.equal(zeroTick.labyrinth.kingOrderCooldownSeconds, 30);
+
+  const zeroOffline = createGameState();
+  zeroOffline.labyrinth.kingOrderCooldownSeconds = 30;
+  simulateOfflineProgress(zeroOffline, 0);
+  assert.equal(zeroOffline.labyrinth.kingOrderCooldownSeconds, 30);
+});
+
+test("labyrinth save migration preserves purchases, clamps cooldown, and leaves legacy upgrades alone", () => {
+  const current = createGameState();
+  current.labyrinth.purchasedNodeIds = ["labyrinth01", "labyrinth02", "futureNode"];
+  current.labyrinth.kingOrderCooldownSeconds = 42;
+  current.labyrinth.workerPulseProgressSeconds = 17.5;
+  current.purchasedNodes = ["autoOrders"];
+  current.resources.orders = 333;
+
+  const restored = deserializeGameState(serializeGameState(current));
+  assert.equal(restored.version, 5);
+  assert.deepEqual(restored.labyrinth.purchasedNodeIds, [
+    "labyrinth01",
+    "labyrinth02",
+    "futureNode"
+  ]);
+  assert.equal(restored.labyrinth.kingOrderCooldownSeconds, 42);
+  assert.equal(restored.labyrinth.workerPulseProgressSeconds, 17.5);
+  assert.deepEqual(restored.purchasedNodes, ["autoOrders"]);
+  assert.equal(restored.resources.orders, 333);
+
+  const v4 = createGameState();
+  v4.version = 4;
+  delete v4.labyrinth;
+  v4.purchasedNodes = ["betterTap"];
+  const fromV4 = deserializeGameState(JSON.stringify(v4));
+  assert.equal(fromV4.version, 5);
+  assert.deepEqual(fromV4.labyrinth, {
+    purchasedNodeIds: [],
+    kingOrderCooldownSeconds: 0,
+    workerPulseProgressSeconds: 0
+  });
+  assert.deepEqual(fromV4.purchasedNodes, ["betterTap"]);
+
+  const malformed = createGameState();
+  malformed.version = 4;
+  malformed.labyrinth = {
+    purchasedNodeIds: ["labyrinth01", 12, "labyrinth01", "futureX", null, ""],
+    kingOrderCooldownSeconds: 999,
+    workerPulseProgressSeconds: 95
+  };
+  const normalized = deserializeGameState(JSON.stringify(malformed));
+  assert.deepEqual(normalized.labyrinth.purchasedNodeIds, ["labyrinth01", "futureX"]);
+  assert.equal(normalized.labyrinth.kingOrderCooldownSeconds, 60);
+  assert.equal(normalized.labyrinth.workerPulseProgressSeconds, 5);
+
+  const negative = createGameState();
+  negative.labyrinth = {
+    purchasedNodeIds: "nope",
+    kingOrderCooldownSeconds: -5,
+    workerPulseProgressSeconds: -5
+  };
+  const fixedNegative = deserializeGameState(JSON.stringify(negative));
+  assert.deepEqual(fixedNegative.labyrinth.purchasedNodeIds, []);
+  assert.equal(fixedNegative.labyrinth.kingOrderCooldownSeconds, 0);
+  assert.equal(fixedNegative.labyrinth.workerPulseProgressSeconds, 0);
+});
+
+test("save migration normalizes the full labyrinth and weapon contract without a version bump", () => {
+  const legacy = createGameState();
+  legacy.version = 4;
+  delete legacy.labyrinth;
+  legacy.unlockedSlots = 99;
+  legacy.slots[0].weapon = { automaticShotsSinceGuarantee: 3.9 };
+  legacy.slots[1].weapon = {};
+
+  const restoredLegacy = deserializeGameState(JSON.stringify(legacy));
+  assert.equal(restoredLegacy.version, SAVE_VERSION);
+  assert.deepEqual(restoredLegacy.labyrinth.purchasedNodeIds, []);
+  assert.equal(restoredLegacy.slots[0].weapon.automaticShotsSinceGuarantee, 3);
+  assert.equal(restoredLegacy.slots[1].weapon.automaticShotsSinceGuarantee, 0);
+  assert.equal(restoredLegacy.unlockedSlots, restoredLegacy.slots.length);
+
+  const malformed = createGameState();
+  malformed.labyrinth.purchasedNodeIds = ["labyrinth30", "future31", "labyrinth30", "future31"];
+  malformed.unlockedSlots = -4;
+  malformed.slots[0].weapon = { automaticShotsSinceGuarantee: Number.POSITIVE_INFINITY };
+  malformed.slots[1].weapon = { automaticShotsSinceGuarantee: -2 };
+
+  const normalized = deserializeGameState(JSON.stringify(malformed));
+  assert.deepEqual(normalized.labyrinth.purchasedNodeIds, ["labyrinth30", "future31"]);
+  assert.equal(normalized.slots[0].weapon.automaticShotsSinceGuarantee, 0);
+  assert.equal(normalized.slots[1].weapon.automaticShotsSinceGuarantee, 0);
+  assert.equal(normalized.unlockedSlots, 2);
+  assert.equal(SAVE_VERSION, 5);
 });
 
 test("weapon purchase spends resources and occupies an unlocked slot", () => {
@@ -139,6 +908,36 @@ test("block overflow is compacted without losing pending shard value", () => {
     collectBlock(state, block.id);
   }
   assert.equal(state.stats.shardsCollected, visualValue + banked.gained);
+});
+
+test("long session keeps visual blocks bounded without losing pending rewards", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000_000;
+  state.resources.shards = 1_000_000;
+  state.cube.layerHp[0] = 1_000_000_000;
+  buildWeapon(state, 0, "ballista");
+
+  for (let index = 0; index < 2_000; index += 1) {
+    state.slots[0].weapon.cooldown = 0;
+    manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+    tickGame(state, 0.1, () => 0.5);
+  }
+
+  const pendingBlocks = state.blocks.length + getBankedBlockCount(state);
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(pendingBlocks, state.stats.spawnedBlocks - state.stats.collectedBlocks);
+
+  const firstSaveSize = serializeGameState(state).length;
+  for (let index = 0; index < 2_000; index += 1) {
+    state.slots[0].weapon.cooldown = 0;
+    manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+    tickGame(state, 0.1, () => 0.5);
+  }
+  const secondSaveSize = serializeGameState(state).length;
+
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(state.blocks.length + getBankedBlockCount(state), state.stats.spawnedBlocks - state.stats.collectedBlocks);
+  assert.ok(secondSaveSize <= firstSaveSize + 1_000);
 });
 
 test("banked blocks preserve per-block shard rounding", () => {
@@ -815,7 +1614,7 @@ test("v3 saves gain offline fields without retroactive elapsed time", () => {
 
   const state = deserializeGameState(JSON.stringify(legacy));
 
-  assert.equal(SAVE_VERSION, 4);
+  assert.equal(SAVE_VERSION, 5);
   assert.equal(state.savedAtMs, null);
   assert.ok(Number.isInteger(state.offlineRngState));
 });

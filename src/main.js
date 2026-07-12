@@ -1,12 +1,11 @@
 import {
   CUBE_LAYERS,
   OFFLINE_PROGRESS_CAP_SECONDS,
-  UPGRADE_NODES,
   WEAPON_TYPES,
   ZONES,
   buildWeapon,
-  buyUpgradeNode,
-  canBuyUpgradeNode,
+  buyLabyrinthNode,
+  canBuyLabyrinthNode,
   collectBankedBlocks,
   collectBlock,
   createGameState,
@@ -20,6 +19,7 @@ import {
   getRemainingCubeHp,
   getSiegeGateStatus,
   getUnlockedWeaponTypes,
+  getWeaponBuildCost,
   getWeaponCost,
   getWeaponLayerReachStatus,
   getWeaponType,
@@ -32,10 +32,19 @@ import {
   tickGame,
   upgradeWeapon
 } from "./gameState.js";
-import { readSave, removeSave, writeSave } from "./persistence.js";
+import { exportSave, importSave, readSave, removeSave, writeSave } from "./persistence.js";
+import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.js";
+import { getVolume, isMuted, playSound, setMuted, setVolume, unlockAudio } from "./audio.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
+const CUTSCENE_SEEN_KEY = "cube-over-kingdom-final-cutscene-seen-v1";
+const EFFECTS_KEY = "cube-over-kingdom-effects-v1";
+const AUDIO_SETTINGS_KEY = "cube-over-kingdom-audio-v1";
+const TUTORIAL_SEEN_KEY = "cube-over-kingdom-tutorial-seen-v1";
+const EFFECT_LEVELS = new Set(["full", "low", "off"]);
 const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
+const MAX_RENDERED_PROJECTILES = 64;
+const MAX_RENDERED_FLOATING_TEXTS = 48;
 
 const canvas = document.querySelector("#gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -69,8 +78,22 @@ const ui = {
   hintPanel: document.querySelector("#hintPanel"),
   toast: document.querySelector("#toast"),
   zoneLine: document.querySelector("#zoneLine"),
+  effectsButton: document.querySelector("#effectsButton"),
+  muteButton: document.querySelector("#muteButton"),
+  effectsDialog: document.querySelector("#effectsDialog"),
+  effectsIntensity: document.querySelector("#effectsIntensity"),
+  effectsHint: document.querySelector("#effectsHint"),
+  reducedMotionNotice: document.querySelector("#reducedMotionNotice"),
   saveButton: document.querySelector("#saveButton"),
+  saveDiagnosticsButton: document.querySelector("#saveDiagnosticsButton"),
+  saveDiagnosticsDialog: document.querySelector("#saveDiagnosticsDialog"),
+  saveDiagnosticsClose: document.querySelector("#saveDiagnosticsClose"),
+  saveDiagnosticsData: document.querySelector("#saveDiagnosticsData"),
+  saveExportButton: document.querySelector("#saveExportButton"),
+  saveImportButton: document.querySelector("#saveImportButton"),
   resetButton: document.querySelector("#resetButton"),
+  finalCutscene: document.querySelector("#finalCutscene"),
+  skipCutscene: document.querySelector("#skipCutscene"),
   victoryDialog: document.querySelector("#victoryDialog"),
   victoryStats: document.querySelector("#victoryStats"),
   victoryReset: document.querySelector("#victoryReset"),
@@ -80,10 +103,18 @@ const ui = {
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
   confirmCopy: document.querySelector("#confirmCopy"),
-  confirmAccept: document.querySelector("#confirmAccept")
+  confirmAccept: document.querySelector("#confirmAccept"),
+  tutorial: document.querySelector("#tutorial"),
+  tutorialProgress: document.querySelector("#tutorialProgress"),
+  tutorialTitle: document.querySelector("#tutorialTitle"),
+  tutorialCopy: document.querySelector("#tutorialCopy"),
+  tutorialSkip: document.querySelector("#tutorialSkip")
 };
 
 const getStorage = () => window.localStorage;
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+let effectsIntensity = loadEffectsIntensity();
+loadAudioSettings();
 let persistenceStatus = { writeEnabled: true, message: null };
 let initialOfflineRecap = null;
 let shouldPersistLoadedState = false;
@@ -96,17 +127,24 @@ let autosaveAccumulator = 0;
 let toastTimer = 0;
 let dragStart = null;
 let victoryShown = false;
+let cutsceneTimer = 0;
 let autosaveBackoff = 0;
 let pendingConfirmation = null;
 let sessionSuspended = document.visibilityState === "hidden";
+let animationFrameId = null;
+let observedShots = state.stats.shots;
+let observedLayerIndex = state.cube.layerIndex;
+let tutorialStep = hasSeenTutorial() || state.stats.builtWeapons > 0 ? -1 : 0;
 
 if (shouldPersistLoadedState) {
   saveGame();
 }
 resizeCanvas();
 renderUi();
+renderEffectsSettings();
+renderMuteButton();
 showOfflineRecap(initialOfflineRecap);
-requestAnimationFrame(loop);
+scheduleFrame();
 
 window.addEventListener("resize", resizeCanvas);
 window.addEventListener("focus", resumeSession);
@@ -118,6 +156,23 @@ document.addEventListener("visibilitychange", () => {
     return;
   }
   resumeSession();
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest?.("#muteButton")) {
+    unlockAudio();
+  }
+}, { capture: true });
+document.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && !event.target.closest?.("#muteButton")) {
+    unlockAudio();
+  }
+}, { capture: true });
+
+ui.muteButton.addEventListener("click", () => {
+  setMuted(!isMuted());
+  saveAudioSettings();
+  renderMuteButton();
 });
 
 ui.buildButton.addEventListener("click", () => {
@@ -136,12 +191,12 @@ ui.buildButton.addEventListener("click", () => {
 
 ui.upgradeButton.addEventListener("click", () => {
   const result = upgradeWeapon(state, state.selectedSlot);
-  reportResult(result, "Орудие улучшено");
+  reportResult(result, "Орудие улучшено", "purchase");
 });
 
 ui.repairButton.addEventListener("click", () => {
   const result = repairWeapon(state, state.selectedSlot);
-  reportResult(result, "Ремонт выполнен");
+  reportResult(result, "Ремонт выполнен", "purchase");
 });
 
 ui.manualAimButton.addEventListener("click", () => {
@@ -160,6 +215,19 @@ ui.labyrinthButton.addEventListener("click", () => {
   ui.labyrinthDialog.showModal();
 });
 
+ui.effectsButton.addEventListener("click", () => {
+  renderEffectsSettings();
+  ui.effectsDialog.showModal();
+});
+
+ui.effectsIntensity.addEventListener("change", () => {
+  effectsIntensity = ui.effectsIntensity.value;
+  saveEffectsIntensity();
+  renderEffectsSettings();
+});
+
+reducedMotionQuery.addEventListener("change", renderEffectsSettings);
+
 ui.cameraSlider.addEventListener("input", () => {
   cameraOffset = Number(ui.cameraSlider.value);
 });
@@ -171,6 +239,37 @@ ui.cameraHome.addEventListener("click", () => setCamera(0));
 ui.saveButton.addEventListener("click", () => {
   const result = saveGame();
   showToast(result.ok ? "Осада сохранена" : describeStorageFailure(result.reason));
+});
+
+ui.saveDiagnosticsButton.addEventListener("click", () => {
+  exportSaveToDiagnostics();
+  ui.saveDiagnosticsDialog.showModal();
+});
+
+ui.saveDiagnosticsClose.addEventListener("click", () => {
+  ui.saveDiagnosticsDialog.close();
+});
+
+ui.saveExportButton.addEventListener("click", exportSaveToDiagnostics);
+
+ui.saveImportButton.addEventListener("click", () => {
+  let importedState;
+  const result = importSave(
+    getStorage,
+    SAVE_KEY,
+    ui.saveDiagnosticsData.value,
+    (serialized) => {
+      importedState = deserializeGameState(serialized);
+    }
+  );
+  if (!result.ok) {
+    showToast(result.reason === "invalid"
+      ? "Импорт отклонён: save некорректен"
+      : describeStorageFailure(result.reason));
+    return;
+  }
+  state = importedState;
+  window.location.reload();
 });
 
 ui.resetButton.addEventListener("click", () => {
@@ -187,6 +286,9 @@ ui.victoryReset.addEventListener("click", (event) => {
   ui.victoryDialog.close();
   resetGame();
 });
+
+ui.skipCutscene.addEventListener("click", finishCutscene);
+ui.tutorialSkip.addEventListener("click", finishTutorial);
 
 ui.offlineDialog.addEventListener("close", maybeShowVictory);
 
@@ -224,6 +326,35 @@ canvas.addEventListener("pointerup", (event) => {
   dragStart = null;
 });
 
+canvas.addEventListener("keydown", (event) => {
+  if (event.repeat || (event.key !== "Enter" && event.key !== " ")) {
+    return;
+  }
+  event.preventDefault();
+  tapForOrders(state);
+  playSound("tap");
+  renderUi();
+});
+
+document.querySelectorAll("dialog.game-dialog").forEach((dialog) => {
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    dialog.close("cancel");
+  });
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
+  const openDialogs = document.querySelectorAll("dialog.game-dialog[open]");
+  const topDialog = openDialogs[openDialogs.length - 1];
+  if (topDialog) {
+    event.preventDefault();
+    topDialog.close("cancel");
+  }
+});
+
 canvas.addEventListener(
   "wheel",
   (event) => {
@@ -234,15 +365,16 @@ canvas.addEventListener(
 );
 
 function loop(now) {
+  animationFrameId = null;
   if (sessionSuspended) {
     lastFrame = now;
-    requestAnimationFrame(loop);
     return;
   }
 
   const dt = Math.min(0.08, (now - lastFrame) / 1000);
   lastFrame = now;
   tickGame(state, dt);
+  playStateSounds();
   renderScene();
 
   uiAccumulator += dt;
@@ -267,7 +399,13 @@ function loop(now) {
   }
   maybeShowVictory();
 
-  requestAnimationFrame(loop);
+  scheduleFrame();
+}
+
+function scheduleFrame() {
+  if (!sessionSuspended && animationFrameId === null) {
+    animationFrameId = requestAnimationFrame(loop);
+  }
 }
 
 function renderScene() {
@@ -421,7 +559,8 @@ function drawWeakSpot(metrics) {
   if (y < -40 || y > canvas.height * 0.72) {
     return;
   }
-  const pulse = 0.5 + Math.sin(state.time * 6) * 0.5;
+  const intensity = getEffectiveEffectsIntensity();
+  const pulse = intensity === "full" ? 0.5 + Math.sin(state.time * 6) * 0.5 : intensity === "low" ? 0.35 : 0;
   ctx.save();
   ctx.shadowColor = "#ffb56b";
   ctx.shadowBlur = 18 + pulse * 12;
@@ -488,7 +627,13 @@ function drawZoneBands(metrics) {
 }
 
 function drawProjectiles(width, height, metrics) {
-  for (const projectile of state.projectiles) {
+  const intensity = getEffectiveEffectsIntensity();
+  if (intensity === "off") {
+    return;
+  }
+  const visibleProjectiles = state.projectiles.slice(-MAX_RENDERED_PROJECTILES);
+  const projectiles = intensity === "low" ? visibleProjectiles.filter((_, index) => index % 2 === 0) : visibleProjectiles;
+  for (const projectile of projectiles) {
     const progress = Math.min(1, projectile.age / projectile.duration);
     const slotX = getSlotScreenX(projectile.fromSlot, width);
     const slotY = height * 0.82;
@@ -653,10 +798,16 @@ function drawBankedBlockPile(width, height) {
 }
 
 function drawFloatingTexts(width, height, metrics) {
+  const intensity = getEffectiveEffectsIntensity();
+  if (intensity === "off") {
+    return;
+  }
   ctx.font = `${14 * devicePixelRatio}px sans-serif`;
   ctx.textAlign = "center";
   ctx.lineWidth = 3 * devicePixelRatio;
-  for (const item of state.floatingTexts) {
+  const visibleTexts = state.floatingTexts.slice(-MAX_RENDERED_FLOATING_TEXTS);
+  const floatingTexts = intensity === "low" ? visibleTexts.filter((_, index) => index % 2 === 0) : visibleTexts;
+  for (const item of floatingTexts) {
     let x = item.x * width;
     let y = item.y * height;
     if (item.y < 0.7) {
@@ -707,6 +858,78 @@ function renderUi() {
   renderWeaponCards();
   renderActionPanel();
   renderHintPanel();
+  renderTutorial();
+}
+
+function renderMuteButton() {
+  const muted = isMuted();
+  ui.muteButton.textContent = muted ? "🔇" : "🔊";
+  ui.muteButton.title = muted ? "Включить звук" : "Выключить звук";
+  ui.muteButton.setAttribute("aria-label", ui.muteButton.title);
+  ui.muteButton.setAttribute("aria-pressed", String(muted));
+}
+
+function loadAudioSettings() {
+  try {
+    const saved = JSON.parse(getStorage().getItem(AUDIO_SETTINGS_KEY));
+    if (typeof saved?.muted !== "boolean" || !Number.isFinite(saved?.volume)) {
+      return;
+    }
+    setMuted(saved.muted);
+    setVolume(saved.volume);
+  } catch {
+    setMuted(false);
+    setVolume(0.22);
+  }
+}
+
+function saveAudioSettings() {
+  try {
+    getStorage().setItem(AUDIO_SETTINGS_KEY, JSON.stringify({ muted: isMuted(), volume: getVolume() }));
+  } catch {
+    // Audio preferences are non-critical and remain usable for this session.
+  }
+}
+
+function playStateSounds() {
+  if (state.stats.shots > observedShots) {
+    playSound("shot");
+  }
+  if (state.cube.layerIndex > observedLayerIndex) {
+    playSound("destruction");
+  }
+  observedShots = state.stats.shots;
+  observedLayerIndex = state.cube.layerIndex;
+}
+
+function getEffectiveEffectsIntensity() {
+  return reducedMotionQuery.matches ? "off" : effectsIntensity;
+}
+
+function loadEffectsIntensity() {
+  try {
+    const saved = getStorage().getItem(EFFECTS_KEY);
+    return EFFECT_LEVELS.has(saved) ? saved : "full";
+  } catch {
+    return "full";
+  }
+}
+
+function saveEffectsIntensity() {
+  try {
+    getStorage().setItem(EFFECTS_KEY, effectsIntensity);
+  } catch {
+    showToast("Не удалось сохранить настройки эффектов");
+  }
+}
+
+function renderEffectsSettings() {
+  const reduced = reducedMotionQuery.matches;
+  ui.effectsIntensity.value = effectsIntensity;
+  ui.effectsIntensity.disabled = reduced;
+  ui.effectsHint.textContent = reduced ? "Эффекты отключены системной настройкой" : "Анимации и визуальные частицы";
+  ui.reducedMotionNotice.classList.toggle("hidden", !reduced);
+  document.documentElement.dataset.effects = getEffectiveEffectsIntensity();
 }
 
 function renderSlots() {
@@ -715,6 +938,7 @@ function renderSlots() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "slot-button";
+      button.dataset.slotIndex = String(index);
       button.classList.toggle("selected", index === state.selectedSlot);
       button.classList.toggle("locked", index >= state.unlockedSlots);
       button.disabled = false;
@@ -739,10 +963,11 @@ function renderWeaponCards() {
   ui.weaponCards.replaceChildren(
     ...WEAPON_TYPES.map((type) => {
       const isLocked = !unlocked.has(type.id);
-      const cost = getWeaponCost(type, 1);
+      const cost = getWeaponBuildCost(state, type);
       const card = document.createElement("button");
       card.type = "button";
       card.className = "weapon-card";
+      card.dataset.weaponType = type.id;
       card.classList.toggle("selected", type.id === state.selectedWeaponType);
       card.classList.toggle("locked", isLocked);
       card.style.setProperty("--weapon-hue", type.hue);
@@ -760,6 +985,9 @@ function renderWeaponCards() {
         }
         state.selectedWeaponType = type.id;
         manualMode = false;
+        if (tutorialStep === 1 && type.id === "stoneThrower") {
+          tutorialStep = 2;
+        }
         renderUi();
       });
       return card;
@@ -770,7 +998,7 @@ function renderWeaponCards() {
 function renderActionPanel() {
   const slot = state.slots[state.selectedSlot];
   const selectedType = getWeaponType(state.selectedWeaponType);
-  const selectedCost = getWeaponCost(selectedType, 1);
+  const selectedCost = getWeaponBuildCost(state, selectedType);
   const slotUnlocked = state.selectedSlot < state.unlockedSlots;
   const weapon = slot?.weapon;
 
@@ -809,16 +1037,20 @@ function renderZoneLine() {
   const reach = getWeaponLayerReachStatus(type, layerIndex);
   const weaponZones = describeWeaponZones(type);
   const layerText = `Слой уязвим: ${vulnerability.text}`;
+  const recommendedCategory = vulnerability.requiredWeaponNames.length > 0
+    ? vulnerability.requiredWeaponNames.join(" или ")
+    : vulnerability.zoneNames.filter((name) => name !== ZONES.weak.name).join(" или ");
+  const recommendationText = `Подходящая категория: ${recommendedCategory}`;
 
   ui.zoneLine.classList.toggle("warning", reach.kind === "blocked");
   ui.zoneLine.classList.toggle("weak-only", reach.kind === "weak-only");
   if (reach.kind === "normal") {
     const overlapText = ` · достаёт: ${reach.normalZones.map(formatZoneName).join(", ")}`;
-    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
+    ui.zoneLine.textContent = `${layerText}. ${recommendationText}. ${source}: ${type.name} · ${weaponZones}${overlapText}`;
   } else if (reach.kind === "weak-only") {
-    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} наносит урон только по слабому месту; обычные выстрелы вне зоны.`;
+    ui.zoneLine.textContent = `${layerText}. ${recommendationText}. ${source}: ${type.name} наносит урон только по слабому месту; обычные выстрелы вне зоны.`;
   } else {
-    ui.zoneLine.textContent = `${layerText}. ${source}: ${type.name} не достаёт до слоя.`;
+    ui.zoneLine.textContent = `${layerText}. ${recommendationText}. ${source}: ${type.name} не достаёт до слоя.`;
   }
 }
 
@@ -835,7 +1067,7 @@ function getContextHint() {
   if (state.won) {
     return "Куб пал. Начните новую осаду, чтобы проверить другой билд.";
   }
-  const stoneCost = getWeaponCost(getWeaponType("stoneThrower"), 1).orders;
+  const stoneCost = getWeaponBuildCost(state, getWeaponType("stoneThrower")).orders;
   if (state.stats.builtWeapons === 0) {
     if (state.resources.orders < stoneCost) {
       return `Цель: ${stoneCost} приказов на первый камнемёт. Текущие приказы: ${formatNumber(state.resources.orders)}.`;
@@ -867,31 +1099,60 @@ function getInspectedWeaponType() {
 
 function renderLabyrinth() {
   ui.upgradeGrid.replaceChildren(
-    ...UPGRADE_NODES.map((node, index) => {
-      const done = state.purchasedNodes.includes(node.id);
-      const available = index < 2 || state.purchasedNodes.includes(UPGRADE_NODES[index - 1].id);
-      const canBuy = available ? canBuyUpgradeNode(state, node.id) : { ok: false, reason: "hidden" };
+    ...getVisibleLabyrinthNodes(state.labyrinth.purchasedNodeIds).map(({ node, status }) => {
+      const canBuy = canBuyLabyrinthNode(state, node.id);
+      const notImplemented = canBuy.reason === "not-implemented";
+      const lockReason = getLabyrinthLockReason(node, status, canBuy);
       const item = document.createElement("article");
       item.className = "upgrade-node";
-      item.classList.toggle("done", done);
+      item.classList.toggle("done", status === "purchased");
+      item.dataset.status = notImplemented ? "not-implemented" : status;
+      const maintenanceBonus = node.branch === "maintenance"
+        ? `<span class="maintenance-bonus">${status === "purchased" ? "Бонус активен" : "Бонус ремонта и стойкости"}</span>`
+        : "";
       item.innerHTML = `
-        <h3>${node.name}</h3>
-        <p>${node.effectText}${node.requiresLayerIndex ? ` · после слоя ${node.requiresLayerIndex}` : ""}</p>
-        <div class="upgrade-cost">${canBuy.reason === "prerequisite" ? "Слой ещё не разрушен" : formatCost(node.cost)}</div>
+        <h3>${node.number}. ${node.name}</h3>
+        <p>${node.effectText}</p>
+        ${maintenanceBonus}
+        <div class="upgrade-cost">${lockReason ?? (notImplemented ? "Скоро" : formatCost(node.cost))}</div>
       `;
       const button = document.createElement("button");
       button.type = "button";
-      button.textContent = done ? "Куплено" : available ? "Купить" : "Скрыто";
-      button.disabled = done || !available || !canBuy.ok;
+      button.textContent = status === "purchased"
+        ? "Куплено"
+        : notImplemented
+          ? "Скоро"
+          : status === "preview"
+            ? "Предпросмотр"
+            : canBuy.ok
+              ? "Купить"
+              : "Недостаточно ресурсов";
+      button.disabled = status !== "available" || !canBuy.ok;
       button.addEventListener("click", () => {
-        const result = buyUpgradeNode(state, node.id);
-        reportResult(result, node.effectText);
+        if (!canBuyLabyrinthNode(state, node.id).ok) {
+          return;
+        }
+        const result = buyLabyrinthNode(state, node.id);
+        reportResult(result, node.effectText, "purchase");
         renderLabyrinth();
       });
       item.append(button);
       return item;
     })
   );
+}
+
+function getLabyrinthLockReason(node, status, canBuy) {
+  if (status === "preview") {
+    const prerequisiteNames = node.prerequisites
+      .map((id) => getLabyrinthNode(id)?.name)
+      .filter(Boolean);
+    return `Требуется: ${prerequisiteNames.join(", ")}`;
+  }
+  if (status === "available" && canBuy.reason === "cost") {
+    return "Недостаточно ресурсов";
+  }
+  return null;
 }
 
 function handleCanvasTap(event) {
@@ -917,12 +1178,17 @@ function handleCanvasTap(event) {
     const world = screenToCube(px, py, getSceneMetrics(canvas.width, canvas.height));
     const result = manualAimAt(state, world.x, world.y, state.selectedSlot);
     reportResult(result, result.hitWeakSpot ? "Слабое место пробито" : "Ручной выстрел");
+    if (result.ok) {
+      observedShots = state.stats.shots;
+      playSound("shot");
+    }
     manualMode = false;
     renderUi();
     return;
   }
 
   tapForOrders(state);
+  playSound("tap");
   renderUi();
 }
 
@@ -945,7 +1211,7 @@ function findBlockAt(px, py) {
 
 function canBuildSelected() {
   const type = getWeaponType(state.selectedWeaponType);
-  return type.unlockLayer <= state.cube.layerIndex && canAffordCost(getWeaponCost(type, 1));
+  return type.unlockLayer <= state.cube.layerIndex && canAffordCost(getWeaponBuildCost(state, type));
 }
 
 function canUpgradeSelected() {
@@ -961,8 +1227,11 @@ function canAffordCost(cost) {
   return state.resources.orders >= (cost.orders ?? 0) && state.resources.shards >= (cost.shards ?? 0);
 }
 
-function reportResult(result, okMessage) {
+function reportResult(result, okMessage, soundName = null) {
   if (result.ok) {
+    if (soundName) {
+      playSound(soundName);
+    }
     showToast(okMessage);
     saveGame();
     renderUi();
@@ -987,7 +1256,60 @@ function buildOrReplaceSelected() {
   const slot = state.slots[state.selectedSlot];
   const wasOccupied = Boolean(slot?.weapon);
   const result = wasOccupied ? replaceWeapon(state) : buildWeapon(state);
-  reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено");
+  reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено", "purchase");
+  if (result.ok && tutorialStep >= 0 && state.stats.builtWeapons > 0) {
+    finishTutorial();
+  }
+}
+
+function renderTutorial() {
+  if (tutorialStep < 0) {
+    ui.tutorial.classList.add("hidden");
+    return;
+  }
+  const stoneCost = getWeaponBuildCost(state, getWeaponType("stoneThrower")).orders;
+  if (tutorialStep === 0 && state.resources.orders >= stoneCost) {
+    tutorialStep = 1;
+  }
+  const steps = [
+    {
+      title: "Соберите приказы",
+      copy: `Тапайте по игровому полю, пока не накопите ${stoneCost} приказов. Сейчас: ${formatNumber(state.resources.orders)}.`
+    },
+    {
+      title: "Выберите первое орудие",
+      copy: `Нажмите карточку «Камнемёт». Его покупка стоит ${stoneCost} приказов.`
+    },
+    {
+      title: "Разместите камнемёт",
+      copy: "Выберите свободную площадку и нажмите «Построить». Орудие сразу начнёт атаковать куб."
+    }
+  ];
+  const step = steps[tutorialStep];
+  ui.tutorialProgress.textContent = `Шаг ${tutorialStep + 1} из ${steps.length}`;
+  ui.tutorialTitle.textContent = step.title;
+  ui.tutorialCopy.textContent = step.copy;
+  ui.tutorial.classList.remove("hidden");
+  document.body.dataset.tutorialStep = String(tutorialStep + 1);
+}
+
+function finishTutorial() {
+  tutorialStep = -1;
+  ui.tutorial.classList.add("hidden");
+  delete document.body.dataset.tutorialStep;
+  try {
+    getStorage().setItem(TUTORIAL_SEEN_KEY, "true");
+  } catch {
+    // The tutorial remains dismissed for this session when storage is unavailable.
+  }
+}
+
+function hasSeenTutorial() {
+  try {
+    return getStorage().getItem(TUTORIAL_SEEN_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function requestConfirmation({ title, copy, confirmLabel, action }) {
@@ -1022,12 +1344,45 @@ function showVictory() {
   saveGame();
 }
 
+function showFinalCutscene() {
+  saveGame();
+  try {
+    getStorage().setItem(CUTSCENE_SEEN_KEY, "true");
+  } catch {
+    // The victory save and cutscene still work when optional browser storage is unavailable.
+  }
+  ui.finalCutscene.classList.remove("hidden");
+  ui.finalCutscene.setAttribute("aria-hidden", "false");
+  ui.skipCutscene.focus();
+  cutsceneTimer = window.setTimeout(finishCutscene, 6500);
+}
+
+function finishCutscene() {
+  window.clearTimeout(cutsceneTimer);
+  cutsceneTimer = 0;
+  ui.finalCutscene.classList.add("hidden");
+  ui.finalCutscene.setAttribute("aria-hidden", "true");
+  showVictory();
+}
+
+function hasSeenFinalCutscene() {
+  try {
+    return getStorage().getItem(CUTSCENE_SEEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 function maybeShowVictory() {
   if (!state.won || victoryShown || ui.offlineDialog.open) {
     return;
   }
   victoryShown = true;
-  showVictory();
+  if (hasSeenFinalCutscene()) {
+    showVictory();
+    return;
+  }
+  showFinalCutscene();
 }
 
 function showOfflineRecap(recap) {
@@ -1098,7 +1453,12 @@ function saveGame() {
   state.savedAtMs = Date.now();
   let serialized;
   try {
-    serialized = serializeGameState(state);
+    serialized = serializeGameState({
+      ...state,
+      cube: { ...state.cube, damageMarks: [] },
+      projectiles: [],
+      floatingTexts: []
+    });
   } catch {
     persistenceStatus.message = "Не удалось подготовить сохранение. Игра продолжает работать без автосейва.";
     return { ok: false, reason: "serialize" };
@@ -1110,6 +1470,22 @@ function saveGame() {
     persistenceStatus.message = describeStorageFailure(result.reason);
   }
   return result;
+}
+
+function exportSaveToDiagnostics() {
+  if (persistenceStatus.writeEnabled) {
+    saveGame();
+  }
+  const result = exportSave(getStorage, SAVE_KEY);
+  if (result.ok) {
+    ui.saveDiagnosticsData.value = result.value;
+    showToast("Save подготовлен для экспорта");
+    return;
+  }
+  ui.saveDiagnosticsData.value = "";
+  showToast(result.reason === "not-found"
+    ? "Нет save для экспорта"
+    : describeStorageFailure(result.reason));
 }
 
 function loadGame() {
@@ -1150,6 +1526,10 @@ function applyOfflineCatchUp(targetState, nowMs) {
 
 function suspendSession() {
   sessionSuspended = true;
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
   saveGame();
 }
 
@@ -1164,6 +1544,7 @@ function resumeSession() {
   renderUi();
   showOfflineRecap(recap);
   lastFrame = performance.now();
+  scheduleFrame();
 }
 
 function resetGame() {
@@ -1178,6 +1559,11 @@ function resetGame() {
   victoryShown = false;
   autosaveBackoff = removed.ok ? 0 : 60;
   if (removed.ok) {
+    try {
+      getStorage().removeItem(CUTSCENE_SEEN_KEY);
+    } catch {
+      // The new siege can still start when optional browser storage is unavailable.
+    }
     saveGame();
   }
   renderUi();

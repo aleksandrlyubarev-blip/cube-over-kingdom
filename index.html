@@ -36,13 +36,23 @@
           </div>
         </div>
         <div class="top-actions">
+          <button id="muteButton" class="icon-button" type="button" title="Выключить звук" aria-label="Выключить звук" aria-pressed="false">🔊</button>
+          <button id="effectsButton" class="icon-button" type="button" title="Настройки эффектов" aria-label="Настройки эффектов">⚙</button>
           <button id="saveButton" class="icon-button" type="button" title="Сохранить">S</button>
+          <button id="saveDiagnosticsButton" class="icon-button" type="button" title="Диагностика save" aria-label="Диагностика save">D</button>
           <button id="resetButton" class="reset-action danger" type="button" title="Начать заново">Новая</button>
         </div>
       </header>
 
       <section class="stage-wrap" aria-label="Игровое поле">
-        <canvas id="gameCanvas" width="1280" height="720"></canvas>
+        <canvas
+          id="gameCanvas"
+          width="1280"
+          height="720"
+          tabindex="0"
+          role="button"
+          aria-label="Отдать приказ. Нажмите Enter или Пробел"
+        ></canvas>
         <div class="camera-panel">
           <button id="cameraUp" class="icon-button" type="button" title="Камера выше">▲</button>
           <input id="cameraSlider" type="range" min="0" max="0.82" step="0.01" value="0" aria-label="Высота камеры" />
@@ -88,6 +98,24 @@
         </div>
       </section>
     </main>
+
+    <aside id="tutorial" class="tutorial hidden" aria-live="polite" aria-label="Обучение">
+      <div class="tutorial-progress" id="tutorialProgress">Шаг 1 из 3</div>
+      <h2 id="tutorialTitle">Соберите приказы</h2>
+      <p id="tutorialCopy"></p>
+      <button id="tutorialSkip" class="tutorial-skip" type="button">Пропустить обучение</button>
+    </aside>
+
+    <section id="finalCutscene" class="final-cutscene hidden" aria-labelledby="cutsceneTitle" aria-hidden="true">
+      <div class="cutscene-flare" aria-hidden="true"></div>
+      <div class="cutscene-cube" aria-hidden="true"></div>
+      <div class="cutscene-copy">
+        <p class="cutscene-kicker">Сердце куба разрушено</p>
+        <h2 id="cutsceneTitle">Небо снова принадлежит Королевству</h2>
+        <p>Последние грани гаснут над стенами. Осада окончена.</p>
+      </div>
+      <button id="skipCutscene" class="cutscene-skip" type="button">Пропустить</button>
+    </section>
 
     <dialog id="labyrinthDialog" class="game-dialog">
       <form method="dialog" class="dialog-shell">
@@ -135,6 +163,44 @@
           <button id="confirmAccept" class="primary-button" value="confirm" type="submit">Подтвердить</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="effectsDialog" class="game-dialog settings-dialog" aria-labelledby="effectsTitle">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="effectsTitle">Визуальные эффекты</h2>
+          <button class="icon-button" value="close" type="submit" title="Закрыть">×</button>
+        </header>
+        <label class="setting-row" for="effectsIntensity">
+          <span>
+            <strong>Интенсивность</strong>
+            <small id="effectsHint">Анимации и визуальные частицы</small>
+          </span>
+          <select id="effectsIntensity">
+            <option value="full">Полная</option>
+            <option value="low">Сниженная</option>
+            <option value="off">Выключена</option>
+          </select>
+        </label>
+        <p id="reducedMotionNotice" class="reduced-motion-notice hidden" role="status">
+          Системная настройка «Уменьшение движения» активна и отключает эффекты.
+        </p>
+      </form>
+    </dialog>
+
+    <dialog id="saveDiagnosticsDialog" class="game-dialog settings-dialog" aria-labelledby="saveDiagnosticsTitle">
+      <div class="dialog-shell">
+        <header class="dialog-header">
+          <h2 id="saveDiagnosticsTitle">Диагностика save</h2>
+          <button id="saveDiagnosticsClose" class="icon-button" type="button" title="Закрыть">×</button>
+        </header>
+        <p>Скопируйте экспорт или вставьте ранее экспортированный save для проверки и импорта.</p>
+        <textarea id="saveDiagnosticsData" rows="12" aria-label="Экспортированный save" spellcheck="false"></textarea>
+        <div class="confirm-actions">
+          <button id="saveExportButton" class="plain-button" type="button">Экспорт</button>
+          <button id="saveImportButton" class="primary-button" type="button">Импорт</button>
+        </div>
+      </div>
     </dialog>
 
     <script type="module" src="./src/main.js"></script>
