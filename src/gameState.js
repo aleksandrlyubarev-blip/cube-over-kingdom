@@ -1239,6 +1239,9 @@ export function migrateSaveData(parsed) {
   state.savedAtMs = Number.isFinite(state.savedAtMs) ? Math.max(0, Math.floor(state.savedAtMs)) : null;
   state.offlineRngState = normalizeOfflineRngState(state.offlineRngState);
   state.labyrinth = normalizeLabyrinth(state.labyrinth);
+  state.unlockedSlots = Number.isFinite(state.unlockedSlots)
+    ? Math.max(2, Math.min(state.slots.length, Math.floor(state.unlockedSlots)))
+    : 2;
   for (const slot of state.slots) {
     if (slot?.weapon) {
       const counter = Number(slot.weapon.automaticShotsSinceGuarantee);

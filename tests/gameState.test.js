@@ -790,6 +790,35 @@ test("labyrinth save migration preserves purchases, clamps cooldown, and leaves 
   assert.equal(fixedNegative.labyrinth.workerPulseProgressSeconds, 0);
 });
 
+test("save migration normalizes the full labyrinth and weapon contract without a version bump", () => {
+  const legacy = createGameState();
+  legacy.version = 4;
+  delete legacy.labyrinth;
+  legacy.unlockedSlots = 99;
+  legacy.slots[0].weapon = { automaticShotsSinceGuarantee: 3.9 };
+  legacy.slots[1].weapon = {};
+
+  const restoredLegacy = deserializeGameState(JSON.stringify(legacy));
+  assert.equal(restoredLegacy.version, SAVE_VERSION);
+  assert.deepEqual(restoredLegacy.labyrinth.purchasedNodeIds, []);
+  assert.equal(restoredLegacy.slots[0].weapon.automaticShotsSinceGuarantee, 3);
+  assert.equal(restoredLegacy.slots[1].weapon.automaticShotsSinceGuarantee, 0);
+  assert.equal(restoredLegacy.unlockedSlots, restoredLegacy.slots.length);
+
+  const malformed = createGameState();
+  malformed.labyrinth.purchasedNodeIds = ["labyrinth30", "future31", "labyrinth30", "future31"];
+  malformed.unlockedSlots = -4;
+  malformed.slots[0].weapon = { automaticShotsSinceGuarantee: Number.POSITIVE_INFINITY };
+  malformed.slots[1].weapon = { automaticShotsSinceGuarantee: -2 };
+
+  const normalized = deserializeGameState(JSON.stringify(malformed));
+  assert.deepEqual(normalized.labyrinth.purchasedNodeIds, ["labyrinth30", "future31"]);
+  assert.equal(normalized.slots[0].weapon.automaticShotsSinceGuarantee, 0);
+  assert.equal(normalized.slots[1].weapon.automaticShotsSinceGuarantee, 0);
+  assert.equal(normalized.unlockedSlots, 2);
+  assert.equal(SAVE_VERSION, 5);
+});
+
 test("weapon purchase spends resources and occupies an unlocked slot", () => {
   const state = createGameState();
   state.resources.orders = 100;
