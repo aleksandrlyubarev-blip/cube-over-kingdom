@@ -910,6 +910,36 @@ test("block overflow is compacted without losing pending shard value", () => {
   assert.equal(state.stats.shardsCollected, visualValue + banked.gained);
 });
 
+test("long session keeps visual blocks bounded without losing pending rewards", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000_000;
+  state.resources.shards = 1_000_000;
+  state.cube.layerHp[0] = 1_000_000_000;
+  buildWeapon(state, 0, "ballista");
+
+  for (let index = 0; index < 2_000; index += 1) {
+    state.slots[0].weapon.cooldown = 0;
+    manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+    tickGame(state, 0.1, () => 0.5);
+  }
+
+  const pendingBlocks = state.blocks.length + getBankedBlockCount(state);
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(pendingBlocks, state.stats.spawnedBlocks - state.stats.collectedBlocks);
+
+  const firstSaveSize = serializeGameState(state).length;
+  for (let index = 0; index < 2_000; index += 1) {
+    state.slots[0].weapon.cooldown = 0;
+    manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+    tickGame(state, 0.1, () => 0.5);
+  }
+  const secondSaveSize = serializeGameState(state).length;
+
+  assert.equal(state.blocks.length, MAX_VISUAL_BLOCKS);
+  assert.equal(state.blocks.length + getBankedBlockCount(state), state.stats.spawnedBlocks - state.stats.collectedBlocks);
+  assert.ok(secondSaveSize <= firstSaveSize + 1_000);
+});
+
 test("banked blocks preserve per-block shard rounding", () => {
   const state = createGameState();
   state.modifiers.shardYield = 1.5;

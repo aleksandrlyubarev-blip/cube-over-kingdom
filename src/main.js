@@ -43,6 +43,8 @@ const AUDIO_SETTINGS_KEY = "cube-over-kingdom-audio-v1";
 const TUTORIAL_SEEN_KEY = "cube-over-kingdom-tutorial-seen-v1";
 const EFFECT_LEVELS = new Set(["full", "low", "off"]);
 const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
+const MAX_RENDERED_PROJECTILES = 64;
+const MAX_RENDERED_FLOATING_TEXTS = 48;
 
 const canvas = document.querySelector("#gameCanvas");
 const ctx = canvas.getContext("2d");
@@ -592,7 +594,8 @@ function drawProjectiles(width, height, metrics) {
   if (intensity === "off") {
     return;
   }
-  const projectiles = intensity === "low" ? state.projectiles.filter((_, index) => index % 2 === 0) : state.projectiles;
+  const visibleProjectiles = state.projectiles.slice(-MAX_RENDERED_PROJECTILES);
+  const projectiles = intensity === "low" ? visibleProjectiles.filter((_, index) => index % 2 === 0) : visibleProjectiles;
   for (const projectile of projectiles) {
     const progress = Math.min(1, projectile.age / projectile.duration);
     const slotX = getSlotScreenX(projectile.fromSlot, width);
@@ -765,7 +768,8 @@ function drawFloatingTexts(width, height, metrics) {
   ctx.font = `${14 * devicePixelRatio}px sans-serif`;
   ctx.textAlign = "center";
   ctx.lineWidth = 3 * devicePixelRatio;
-  const floatingTexts = intensity === "low" ? state.floatingTexts.filter((_, index) => index % 2 === 0) : state.floatingTexts;
+  const visibleTexts = state.floatingTexts.slice(-MAX_RENDERED_FLOATING_TEXTS);
+  const floatingTexts = intensity === "low" ? visibleTexts.filter((_, index) => index % 2 === 0) : visibleTexts;
   for (const item of floatingTexts) {
     let x = item.x * width;
     let y = item.y * height;
@@ -1412,7 +1416,12 @@ function saveGame() {
   state.savedAtMs = Date.now();
   let serialized;
   try {
-    serialized = serializeGameState(state);
+    serialized = serializeGameState({
+      ...state,
+      cube: { ...state.cube, damageMarks: [] },
+      projectiles: [],
+      floatingTexts: []
+    });
   } catch {
     persistenceStatus.message = "Не удалось подготовить сохранение. Игра продолжает работать без автосейва.";
     return { ok: false, reason: "serialize" };
