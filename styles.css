@@ -306,6 +306,55 @@ h1 {
   display: none;
 }
 
+.tutorial {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  width: min(360px, calc(100vw - 36px));
+  padding: 16px;
+  border: 2px solid var(--gold);
+  border-radius: 10px;
+  background: rgba(33, 29, 24, 0.97);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.48);
+}
+
+.tutorial-progress {
+  color: var(--gold-2);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.tutorial h2 {
+  margin-top: 5px;
+  font-size: 18px;
+}
+
+.tutorial p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.tutorial-skip {
+  margin-top: 12px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+}
+
+body[data-tutorial-step="1"] #gameCanvas,
+body[data-tutorial-step="2"] .weapon-card[data-weapon-type="stoneThrower"],
+body[data-tutorial-step="3"] .slot-button[data-slot-index="0"],
+body[data-tutorial-step="3"] #buildButton {
+  outline: 3px solid var(--gold-2);
+  outline-offset: -3px;
+  box-shadow: 0 0 18px rgba(243, 217, 139, 0.7);
+}
+
 .command-panel {
   display: grid;
   grid-template-columns: minmax(230px, 0.82fr) minmax(390px, 1.55fr) minmax(250px, 0.9fr);
@@ -1037,6 +1086,12 @@ h1 {
     grid-template-rows: auto 360px auto;
     height: auto;
     min-height: 100dvh;
+  }
+
+  .tutorial {
+    right: 10px;
+    bottom: 10px;
+    width: calc(100vw - 20px);
   }
 
   .topbar {

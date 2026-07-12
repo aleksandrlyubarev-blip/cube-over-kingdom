@@ -40,6 +40,7 @@ const SAVE_KEY = "cube-over-kingdom-save-v1";
 const CUTSCENE_SEEN_KEY = "cube-over-kingdom-final-cutscene-seen-v1";
 const EFFECTS_KEY = "cube-over-kingdom-effects-v1";
 const AUDIO_SETTINGS_KEY = "cube-over-kingdom-audio-v1";
+const TUTORIAL_SEEN_KEY = "cube-over-kingdom-tutorial-seen-v1";
 const EFFECT_LEVELS = new Set(["full", "low", "off"]);
 const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
 
@@ -94,7 +95,12 @@ const ui = {
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
   confirmCopy: document.querySelector("#confirmCopy"),
-  confirmAccept: document.querySelector("#confirmAccept")
+  confirmAccept: document.querySelector("#confirmAccept"),
+  tutorial: document.querySelector("#tutorial"),
+  tutorialProgress: document.querySelector("#tutorialProgress"),
+  tutorialTitle: document.querySelector("#tutorialTitle"),
+  tutorialCopy: document.querySelector("#tutorialCopy"),
+  tutorialSkip: document.querySelector("#tutorialSkip")
 };
 
 const getStorage = () => window.localStorage;
@@ -119,6 +125,7 @@ let pendingConfirmation = null;
 let sessionSuspended = document.visibilityState === "hidden";
 let observedShots = state.stats.shots;
 let observedLayerIndex = state.cube.layerIndex;
+let tutorialStep = hasSeenTutorial() || state.stats.builtWeapons > 0 ? -1 : 0;
 
 if (shouldPersistLoadedState) {
   saveGame();
@@ -241,6 +248,7 @@ ui.victoryReset.addEventListener("click", (event) => {
 });
 
 ui.skipCutscene.addEventListener("click", finishCutscene);
+ui.tutorialSkip.addEventListener("click", finishTutorial);
 
 ui.offlineDialog.addEventListener("close", maybeShowVictory);
 
@@ -802,6 +810,7 @@ function renderUi() {
   renderWeaponCards();
   renderActionPanel();
   renderHintPanel();
+  renderTutorial();
 }
 
 function renderMuteButton() {
@@ -881,6 +890,7 @@ function renderSlots() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "slot-button";
+      button.dataset.slotIndex = String(index);
       button.classList.toggle("selected", index === state.selectedSlot);
       button.classList.toggle("locked", index >= state.unlockedSlots);
       button.disabled = false;
@@ -909,6 +919,7 @@ function renderWeaponCards() {
       const card = document.createElement("button");
       card.type = "button";
       card.className = "weapon-card";
+      card.dataset.weaponType = type.id;
       card.classList.toggle("selected", type.id === state.selectedWeaponType);
       card.classList.toggle("locked", isLocked);
       card.style.setProperty("--weapon-hue", type.hue);
@@ -926,6 +937,9 @@ function renderWeaponCards() {
         }
         state.selectedWeaponType = type.id;
         manualMode = false;
+        if (tutorialStep === 1 && type.id === "stoneThrower") {
+          tutorialStep = 2;
+        }
         renderUi();
       });
       return card;
@@ -1191,6 +1205,59 @@ function buildOrReplaceSelected() {
   const wasOccupied = Boolean(slot?.weapon);
   const result = wasOccupied ? replaceWeapon(state) : buildWeapon(state);
   reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено", "purchase");
+  if (result.ok && tutorialStep >= 0 && state.stats.builtWeapons > 0) {
+    finishTutorial();
+  }
+}
+
+function renderTutorial() {
+  if (tutorialStep < 0) {
+    ui.tutorial.classList.add("hidden");
+    return;
+  }
+  const stoneCost = getWeaponBuildCost(state, getWeaponType("stoneThrower")).orders;
+  if (tutorialStep === 0 && state.resources.orders >= stoneCost) {
+    tutorialStep = 1;
+  }
+  const steps = [
+    {
+      title: "Соберите приказы",
+      copy: `Тапайте по игровому полю, пока не накопите ${stoneCost} приказов. Сейчас: ${formatNumber(state.resources.orders)}.`
+    },
+    {
+      title: "Выберите первое орудие",
+      copy: `Нажмите карточку «Камнемёт». Его покупка стоит ${stoneCost} приказов.`
+    },
+    {
+      title: "Разместите камнемёт",
+      copy: "Выберите свободную площадку и нажмите «Построить». Орудие сразу начнёт атаковать куб."
+    }
+  ];
+  const step = steps[tutorialStep];
+  ui.tutorialProgress.textContent = `Шаг ${tutorialStep + 1} из ${steps.length}`;
+  ui.tutorialTitle.textContent = step.title;
+  ui.tutorialCopy.textContent = step.copy;
+  ui.tutorial.classList.remove("hidden");
+  document.body.dataset.tutorialStep = String(tutorialStep + 1);
+}
+
+function finishTutorial() {
+  tutorialStep = -1;
+  ui.tutorial.classList.add("hidden");
+  delete document.body.dataset.tutorialStep;
+  try {
+    getStorage().setItem(TUTORIAL_SEEN_KEY, "true");
+  } catch {
+    // The tutorial remains dismissed for this session when storage is unavailable.
+  }
+}
+
+function hasSeenTutorial() {
+  try {
+    return getStorage().getItem(TUTORIAL_SEEN_KEY) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function requestConfirmation({ title, copy, confirmLabel, action }) {
