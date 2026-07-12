@@ -34,6 +34,7 @@ import {
 } from "./gameState.js";
 import { readSave, removeSave, writeSave } from "./persistence.js";
 import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.js";
+import { isMuted, playSound, setMuted, unlockAudio } from "./audio.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
 const EFFECTS_KEY = "cube-over-kingdom-effects-v1";
@@ -73,6 +74,7 @@ const ui = {
   toast: document.querySelector("#toast"),
   zoneLine: document.querySelector("#zoneLine"),
   effectsButton: document.querySelector("#effectsButton"),
+  muteButton: document.querySelector("#muteButton"),
   effectsDialog: document.querySelector("#effectsDialog"),
   effectsIntensity: document.querySelector("#effectsIntensity"),
   effectsHint: document.querySelector("#effectsHint"),
@@ -109,6 +111,8 @@ let victoryShown = false;
 let autosaveBackoff = 0;
 let pendingConfirmation = null;
 let sessionSuspended = document.visibilityState === "hidden";
+let observedShots = state.stats.shots;
+let observedLayerIndex = state.cube.layerIndex;
 
 if (shouldPersistLoadedState) {
   saveGame();
@@ -131,6 +135,14 @@ document.addEventListener("visibilitychange", () => {
   resumeSession();
 });
 
+document.addEventListener("pointerdown", unlockAudio, { once: true, capture: true });
+document.addEventListener("keydown", unlockAudio, { once: true, capture: true });
+
+ui.muteButton.addEventListener("click", () => {
+  setMuted(!isMuted());
+  renderMuteButton();
+});
+
 ui.buildButton.addEventListener("click", () => {
   const preview = getReplacementPreview(state);
   if (preview?.requiresConfirmation) {
@@ -147,12 +159,12 @@ ui.buildButton.addEventListener("click", () => {
 
 ui.upgradeButton.addEventListener("click", () => {
   const result = upgradeWeapon(state, state.selectedSlot);
-  reportResult(result, "Орудие улучшено");
+  reportResult(result, "Орудие улучшено", "purchase");
 });
 
 ui.repairButton.addEventListener("click", () => {
   const result = repairWeapon(state, state.selectedSlot);
-  reportResult(result, "Ремонт выполнен");
+  reportResult(result, "Ремонт выполнен", "purchase");
 });
 
 ui.manualAimButton.addEventListener("click", () => {
@@ -254,6 +266,7 @@ canvas.addEventListener("keydown", (event) => {
   }
   event.preventDefault();
   tapForOrders(state);
+  playSound("tap");
   renderUi();
 });
 
@@ -295,6 +308,7 @@ function loop(now) {
   const dt = Math.min(0.08, (now - lastFrame) / 1000);
   lastFrame = now;
   tickGame(state, dt);
+  playStateSounds();
   renderScene();
 
   uiAccumulator += dt;
@@ -772,6 +786,25 @@ function renderUi() {
   renderHintPanel();
 }
 
+function renderMuteButton() {
+  const muted = isMuted();
+  ui.muteButton.textContent = muted ? "🔇" : "🔊";
+  ui.muteButton.title = muted ? "Включить звук" : "Выключить звук";
+  ui.muteButton.setAttribute("aria-label", ui.muteButton.title);
+  ui.muteButton.setAttribute("aria-pressed", String(muted));
+}
+
+function playStateSounds() {
+  if (state.stats.shots > observedShots) {
+    playSound("shot");
+  }
+  if (state.cube.layerIndex > observedLayerIndex) {
+    playSound("destruction");
+  }
+  observedShots = state.stats.shots;
+  observedLayerIndex = state.cube.layerIndex;
+}
+
 function getEffectiveEffectsIntensity() {
   return reducedMotionQuery.matches ? "off" : effectsIntensity;
 }
@@ -994,7 +1027,7 @@ function renderLabyrinth() {
           return;
         }
         const result = buyLabyrinthNode(state, node.id);
-        reportResult(result, node.effectText);
+        reportResult(result, node.effectText, "purchase");
         renderLabyrinth();
       });
       item.append(button);
@@ -1039,12 +1072,17 @@ function handleCanvasTap(event) {
     const world = screenToCube(px, py, getSceneMetrics(canvas.width, canvas.height));
     const result = manualAimAt(state, world.x, world.y, state.selectedSlot);
     reportResult(result, result.hitWeakSpot ? "Слабое место пробито" : "Ручной выстрел");
+    if (result.ok) {
+      observedShots = state.stats.shots;
+      playSound("shot");
+    }
     manualMode = false;
     renderUi();
     return;
   }
 
   tapForOrders(state);
+  playSound("tap");
   renderUi();
 }
 
@@ -1083,8 +1121,11 @@ function canAffordCost(cost) {
   return state.resources.orders >= (cost.orders ?? 0) && state.resources.shards >= (cost.shards ?? 0);
 }
 
-function reportResult(result, okMessage) {
+function reportResult(result, okMessage, soundName = null) {
   if (result.ok) {
+    if (soundName) {
+      playSound(soundName);
+    }
     showToast(okMessage);
     saveGame();
     renderUi();
@@ -1109,7 +1150,7 @@ function buildOrReplaceSelected() {
   const slot = state.slots[state.selectedSlot];
   const wasOccupied = Boolean(slot?.weapon);
   const result = wasOccupied ? replaceWeapon(state) : buildWeapon(state);
-  reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено");
+  reportResult(result, wasOccupied ? "Орудие заменено" : "Орудие построено", "purchase");
 }
 
 function requestConfirmation({ title, copy, confirmLabel, action }) {
