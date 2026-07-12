@@ -11,7 +11,7 @@ export const CUBE_LAYERS = [
 ];
 
 export const SAVE_VERSION = 5;
-const LABYRINTH_IMPLEMENTED_MAX = 18;
+const LABYRINTH_IMPLEMENTED_MAX = 21;
 const KING_ORDER_COOLDOWN_SECONDS = 60;
 const WORKER_PULSE_INTERVAL_SECONDS = 30;
 const WORKER_PULSE_INCOME_SECONDS = 10;
@@ -693,9 +693,11 @@ export function repairWeapon(state, slotIndex) {
   if (missing <= 0.01) {
     return { ok: false, reason: "healthy" };
   }
+  ensureLabyrinth(state);
+  const repairMultiplier = state.labyrinth.purchasedNodeIds.includes("labyrinth19") ? 0.75 : 1;
   const cost = {
-    orders: Math.ceil(45 * slot.weapon.level),
-    shards: Math.ceil(8 * slot.weapon.level)
+    orders: Math.ceil(45 * slot.weapon.level * repairMultiplier),
+    shards: Math.ceil(8 * slot.weapon.level * repairMultiplier)
   };
   if (!spend(state, cost)) {
     return { ok: false, reason: "cost" };
@@ -768,6 +770,15 @@ export function buyLabyrinthNode(state, nodeId) {
   return { ok: true, node };
 }
 
+function applyWeaponWear(state, weapon, amount, baseMinimumCondition = 0.2) {
+  ensureLabyrinth(state);
+  const wearMultiplier = state.labyrinth.purchasedNodeIds.includes("labyrinth20") ? 0.85 : 1;
+  const minimumCondition = state.labyrinth.purchasedNodeIds.includes("labyrinth21")
+    ? Math.max(0.4, baseMinimumCondition)
+    : baseMinimumCondition;
+  weapon.condition = Math.max(minimumCondition, weapon.condition - amount * wearMultiplier);
+}
+
 export function manualAimAt(state, x, y, slotIndex = state.selectedSlot) {
   const slot = state.slots[slotIndex];
   if (!slot?.weapon) {
@@ -798,7 +809,7 @@ export function manualAimAt(state, x, y, slotIndex = state.selectedSlot) {
     weaponType: type
   });
   slot.weapon.cooldown = type.reload * 0.75;
-  slot.weapon.condition = Math.max(0.25, slot.weapon.condition - 0.015);
+  applyWeaponWear(state, slot.weapon, 0.015, 0.25);
   state.stats.shots += 1;
   slot.weapon.shots += 1;
   if (hitWeakSpot) {
@@ -885,7 +896,7 @@ function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}
   if (!target) {
     state.stats.blockedShots += 1;
     slot.weapon.cooldown += type.reload;
-    slot.weapon.condition = Math.max(0.2, slot.weapon.condition - 0.004);
+    applyWeaponWear(state, slot.weapon, 0.004);
     if (!options.silent) {
       addFloatingText(state, "вне зоны", 0.5, 0.38, "#d2c0a0");
     }
@@ -907,7 +918,7 @@ function resolveAutomaticWeaponShot(state, slot, slotIndex, random, options = {}
   state.stats.shots += 1;
   slot.weapon.shots += 1;
   slot.weapon.cooldown += type.reload * Math.max(0.62, 1 - slot.weapon.level * 0.08);
-  slot.weapon.condition = Math.max(0.2, slot.weapon.condition - (quality.id === "critical" ? 0.026 : 0.01));
+  applyWeaponWear(state, slot.weapon, quality.id === "critical" ? 0.026 : 0.01);
   return { ok: true, damage, hitWeakSpot };
 }
 

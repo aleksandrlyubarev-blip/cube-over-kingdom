@@ -39,6 +39,7 @@ import {
   getWeaponType,
   manualAimAt,
   replaceWeapon,
+  repairWeapon,
   tapForOrders,
   tickGame,
   upgradeWeapon
@@ -188,6 +189,76 @@ test("labyrinth collection nodes 16-18 reach full autocollect and +100% shards",
   assert.equal(getEffectiveShardYield(state), 2);
   state.labyrinth.purchasedNodeIds.push("labyrinth18");
   assert.equal(getEffectiveAutoCollectRate(state), AUTO_COLLECT_RATE);
+});
+
+test("labyrinth maintenance nodes 19-21 purchase at exact costs and prerequisites", () => {
+  const state = createGameState();
+  state.labyrinth.purchasedNodeIds = ["labyrinth13"];
+  state.resources.shards = 1_550;
+
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth20").reason, "prerequisite");
+  assert.equal(canBuyLabyrinthNode(state, "labyrinth21").reason, "prerequisite");
+  assert.equal(buyLabyrinthNode(state, "labyrinth19").ok, true);
+  assert.equal(state.resources.shards, 1_400);
+  assert.equal(buyLabyrinthNode(state, "labyrinth20").ok, true);
+  assert.equal(state.resources.shards, 1_000);
+  assert.equal(buyLabyrinthNode(state, "labyrinth21").ok, true);
+  assert.equal(state.resources.shards, 0);
+});
+
+test("maintenance nodes reduce repair cost and weapon wear while preserving legacy autoRepair", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000;
+  state.resources.shards = 1_000;
+  assert.equal(buildWeapon(state, 0, "stoneThrower").ok, true);
+  state.slots[0].weapon.condition = 0.5;
+
+  assert.equal(repairWeapon(state, 0).ok, true);
+  assert.equal(state.resources.orders, 920);
+  assert.equal(state.resources.shards, 992);
+
+  state.labyrinth.purchasedNodeIds = ["labyrinth19"];
+  state.slots[0].weapon.condition = 0.5;
+  assert.equal(repairWeapon(state, 0).ok, true);
+  assert.equal(state.resources.orders, 886);
+  assert.equal(state.resources.shards, 986);
+
+  state.modifiers.autoRepair = true;
+  state.labyrinth.purchasedNodeIds = ["labyrinth19", "labyrinth20"];
+  state.slots[0].weapon.condition = 0.5;
+  const restored = deserializeGameState(serializeGameState(state));
+  tickGame(restored, 1, () => 0.5);
+  assert.ok(restored.slots[0].weapon.condition > 0.5);
+});
+
+test("maintenance nodes apply 15% wear reduction and 40% condition floor", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000;
+  state.resources.shards = 20;
+  assert.equal(buildWeapon(state, 0, "ballista").ok, true);
+  state.slots[0].weapon.cooldown = 0;
+  state.labyrinth.purchasedNodeIds = ["labyrinth20", "labyrinth21"];
+  state.slots[0].weapon.condition = 0.5;
+
+  tickGame(state, 1, () => 0.5);
+  assert.equal(state.slots[0].weapon.condition, 0.4915);
+  state.slots[0].weapon.condition = 0.41;
+  state.slots[0].weapon.cooldown = 0;
+  manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+  assert.equal(state.slots[0].weapon.condition, 0.4);
+});
+
+test("maintenance wear helper preserves the legacy manual condition floor", () => {
+  const state = createGameState();
+  state.resources.orders = 1_000;
+  state.resources.shards = 20;
+  assert.equal(buildWeapon(state, 0, "ballista").ok, true);
+  state.slots[0].weapon.condition = 0.251;
+  state.slots[0].weapon.cooldown = 0;
+
+  manualAimAt(state, state.cube.weakSpot.x, state.cube.weakSpot.y, 0);
+
+  assert.equal(state.slots[0].weapon.condition, 0.25);
 });
 
 test("labyrinth collection nodes 16-18 give equal results for large and small ticks", () => {
