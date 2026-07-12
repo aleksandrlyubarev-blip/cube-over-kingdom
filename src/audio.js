@@ -3,6 +3,7 @@ const AudioContextClass = window.AudioContext || window.webkitAudioContext;
 let context = null;
 let masterGain = null;
 let muted = false;
+let volume = 0.22;
 
 export function unlockAudio() {
   if (!AudioContextClass) {
@@ -11,7 +12,7 @@ export function unlockAudio() {
   if (!context) {
     context = new AudioContextClass();
     masterGain = context.createGain();
-    masterGain.gain.value = muted ? 0 : 0.22;
+    masterGain.gain.value = muted ? 0 : volume;
     masterGain.connect(context.destination);
   }
   if (context.state === "suspended") {
@@ -23,12 +24,23 @@ export function unlockAudio() {
 export function setMuted(nextMuted) {
   muted = Boolean(nextMuted);
   if (masterGain && context) {
-    masterGain.gain.setTargetAtTime(muted ? 0 : 0.22, context.currentTime, 0.01);
+    masterGain.gain.setTargetAtTime(muted ? 0 : volume, context.currentTime, 0.01);
   }
 }
 
 export function isMuted() {
   return muted;
+}
+
+export function setVolume(nextVolume) {
+  volume = Number.isFinite(nextVolume) ? Math.min(1, Math.max(0, nextVolume)) : 0.22;
+  if (masterGain && context && !muted) {
+    masterGain.gain.setTargetAtTime(volume, context.currentTime, 0.01);
+  }
+}
+
+export function getVolume() {
+  return volume;
 }
 
 export function playSound(name) {

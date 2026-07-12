@@ -34,10 +34,11 @@ import {
 } from "./gameState.js";
 import { readSave, removeSave, writeSave } from "./persistence.js";
 import { getLabyrinthNode, getVisibleLabyrinthNodes } from "./upgradeLabyrinth.js";
-import { isMuted, playSound, setMuted, unlockAudio } from "./audio.js";
+import { getVolume, isMuted, playSound, setMuted, setVolume, unlockAudio } from "./audio.js";
 
 const SAVE_KEY = "cube-over-kingdom-save-v1";
 const EFFECTS_KEY = "cube-over-kingdom-effects-v1";
+const AUDIO_SETTINGS_KEY = "cube-over-kingdom-audio-v1";
 const EFFECT_LEVELS = new Set(["full", "low", "off"]);
 const BLOCK_PILE_POSITION = { x: 0.9, y: 0.73 };
 
@@ -96,6 +97,7 @@ const ui = {
 const getStorage = () => window.localStorage;
 const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 let effectsIntensity = loadEffectsIntensity();
+loadAudioSettings();
 let persistenceStatus = { writeEnabled: true, message: null };
 let initialOfflineRecap = null;
 let shouldPersistLoadedState = false;
@@ -120,6 +122,7 @@ if (shouldPersistLoadedState) {
 resizeCanvas();
 renderUi();
 renderEffectsSettings();
+renderMuteButton();
 showOfflineRecap(initialOfflineRecap);
 requestAnimationFrame(loop);
 
@@ -135,11 +138,20 @@ document.addEventListener("visibilitychange", () => {
   resumeSession();
 });
 
-document.addEventListener("pointerdown", unlockAudio, { once: true, capture: true });
-document.addEventListener("keydown", unlockAudio, { once: true, capture: true });
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest?.("#muteButton")) {
+    unlockAudio();
+  }
+}, { capture: true });
+document.addEventListener("keydown", (event) => {
+  if ((event.key === "Enter" || event.key === " ") && !event.target.closest?.("#muteButton")) {
+    unlockAudio();
+  }
+}, { capture: true });
 
 ui.muteButton.addEventListener("click", () => {
   setMuted(!isMuted());
+  saveAudioSettings();
   renderMuteButton();
 });
 
@@ -792,6 +804,28 @@ function renderMuteButton() {
   ui.muteButton.title = muted ? "Включить звук" : "Выключить звук";
   ui.muteButton.setAttribute("aria-label", ui.muteButton.title);
   ui.muteButton.setAttribute("aria-pressed", String(muted));
+}
+
+function loadAudioSettings() {
+  try {
+    const saved = JSON.parse(getStorage().getItem(AUDIO_SETTINGS_KEY));
+    if (typeof saved?.muted !== "boolean" || !Number.isFinite(saved?.volume)) {
+      return;
+    }
+    setMuted(saved.muted);
+    setVolume(saved.volume);
+  } catch {
+    setMuted(false);
+    setVolume(0.22);
+  }
+}
+
+function saveAudioSettings() {
+  try {
+    getStorage().setItem(AUDIO_SETTINGS_KEY, JSON.stringify({ muted: isMuted(), volume: getVolume() }));
+  } catch {
+    // Audio preferences are non-critical and remain usable for this session.
+  }
 }
 
 function playStateSounds() {
